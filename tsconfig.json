@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "allowJs": false,
+    "skipLibCheck": false,
+    "verbatimModuleSyntax": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmitOnError": true,
+    "newLine": "lf",
+    "lib": [
+      "ES2024",
+      "DOM"
+    ],
+    "types": []
+  },
+  "files": [
+    "crates/sdk/src/browser_queue.ts",
+    "crates/sdk/src/output/console.ts"
+  ]
+}

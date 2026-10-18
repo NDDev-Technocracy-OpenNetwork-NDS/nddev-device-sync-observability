@@ -1,12 +1,16 @@
-// Only the canonical Rust SDK's validated/redacted envelope reaches this sink.
-// Never forward a browser exception object, stack, URL or response body here.
+// console.js is generated from this TypeScript source. Do not edit its output.
+// Only the Rust SDK's validated/redacted envelope reaches this sink. Never
+// forward exception objects, stacks, URLs or response bodies here.
 export function emitConsole(line) {
-  try {
-    const severity = JSON.parse(line).severity;
-    const method = severity === 'error' ? 'error' : severity === 'warn' ? 'warn' : 'log';
-    console[method](line.trimEnd());
-    return true;
-  } catch {
-    return false;
-  }
+    try {
+        const value = JSON.parse(line);
+        if (typeof value !== "object" || value === null || !("severity" in value))
+            return false;
+        const method = value.severity === "error" ? "error" : value.severity === "warn" ? "warn" : "log";
+        console[method](line.trimEnd());
+        return true;
+    }
+    catch {
+        return false;
+    }
 }

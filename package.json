@@ -1,0 +1,16 @@
+{
+  "name": "@nddev/nds-telemetry-browser-io",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "packageManager": "bun@1.4.3",
+  "scripts": {
+    "check": "tsc --noEmit && biome check crates/sdk/src",
+    "generate": "tsc",
+    "check:generated": "tsc && git diff --exit-code -- crates/sdk/src/browser_queue.js crates/sdk/src/output/console.js"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "typescript": "7.0.2"
+  }
+}
