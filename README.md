@@ -35,12 +35,16 @@ searchable and repeated records use the same fingerprint receipts.
 Retained producer progress and source freshness never move backwards. Newly
 observed failures enter the ordinary incident lifecycle; duplicate receipts do
 not reapply transitions. An existing producer cannot be rebound to a different
-device or service.
+device or service. A sequence-gap incident retains the observed discontinuity
+for operator review; later contiguous arrivals alone do not prove which missing
+records were recovered.
 
 Clients can subscribe to SDK-owned event and actual OTLP span feeds.
 Each feed bounds queued plus in-flight records to 128, batches to 32 records /
 64 KiB and retention to 30 minutes. Batch ownership accounts for cancellation,
-expiry and opt-out without duplicate loss counts. Delivery spans retain local
+expiry and opt-out without duplicate loss counts. A single asynchronous drainer
+can await feed readiness; notification does not claim or settle a batch.
+Delivery spans retain local
 credential diagnostics but cannot recursively enter either export feed. The
 `client-traces` feature validates a closed native protobuf projection and lets
 the authenticated server attach tenant/user/device ownership. Feed acceptance
@@ -79,7 +83,11 @@ Browser clients stage those feeds into a strict IndexedDB transaction before
 network delivery. The spool binds to the caller's verified origin/owner/device
 scope and stores exact redacted JSON or OTLP bytes. Limits are 8 MiB of encoded payloads, 4096 records
 (and therefore at most 4096 batches) and 16 scopes per origin; batches retain their original 30-minute
-eligibility and durable retry counts. A short in-flight grace permits a bounded
+eligibility and durable retry counts. Before the first claim, Rust can combine
+records of one signal within the same 32-record / 64 KiB transport limits. The
+transaction joins their exact bytes and keeps the oldest expiry; a previously
+claimed or attempted payload is never changed by batching.
+A short in-flight grace permits a bounded
 request to settle. A browser-owned sender lock serializes tabs. After a known
 receipt, callers retain the batch/count and retry only local `acknowledge_count`
 settlement; browser freshness comes from returned `Health.last_success_at`.
