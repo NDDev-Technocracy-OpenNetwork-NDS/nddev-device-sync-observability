@@ -4,3 +4,4 @@
 /secrets/
 __pycache__/
 .server-acceptance-source/
+/node_modules/

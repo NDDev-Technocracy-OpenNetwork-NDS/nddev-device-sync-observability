@@ -96,8 +96,13 @@ this is not an exactly-once delivery claim. Opt-out discards the scoped queue.
 Counters distinguish queued, durably acknowledged, discarded and failed work.
 The SDK owns durable-spool admission, expiry and receipt accounting in Rust.
 Its synchronous policy callback returns mutations inside the strict IndexedDB
-transaction; JavaScript owns storage/lock I/O only. Detached operation ownership
+transaction; generated JavaScript owns storage/lock I/O only. Detached operation ownership
 keeps the callback alive through commit or abort after caller cancellation.
+Author that I/O in `browser_queue.ts` and the console sink in `output/console.ts`.
+Storage metadata stays unknown until the Rust policy validates it; TypeScript
+checks the concrete browser API inputs, without a parallel spool model.
+`just browser-check` checks strict types, Biome and generated-output drift with
+the frozen Bun lockfile.
 
 `install_client_with_tracer_to` captures bounded startup events for the first
 subscription. Client spans have the same initial buffer. Pre-authentication
