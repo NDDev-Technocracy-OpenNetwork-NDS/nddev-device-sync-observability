@@ -85,6 +85,7 @@ pub(crate) struct Reads<'a> {
     pub lookup: Option<&'a str>,
     pub scan: bool,
     pub ordered: bool,
+    pub next_limit: u32,
     pub sender: Option<&'a str>,
     pub row_limit: u32,
     pub health_limit: usize,
@@ -101,6 +102,7 @@ impl Command {
             lookup: None,
             scan: false,
             ordered: false,
+            next_limit: 32,
             sender: None,
             row_limit: MAX_RECORDS + 1,
             health_limit: MAX_SCOPES + 2,
@@ -196,6 +198,7 @@ pub(crate) struct Snapshot {
 #[derive(Serialize)]
 pub(crate) struct Plan {
     pub remove: Vec<String>,
+    pub combine: Vec<String>,
     pub put: Vec<Record>,
     pub append: Option<Record>,
     health: Vec<Scope>,
@@ -286,6 +289,7 @@ pub(crate) fn decide(
         || snapshot.health.len() > MAX_SCOPES + 1
         || snapshot.expired.len() > MAX_RECORDS as usize
         || snapshot.records.len() > MAX_RECORDS as usize
+        || (reads.ordered && snapshot.records.len() > reads.next_limit as usize)
     {
         return Err(Error);
     }
@@ -353,6 +357,7 @@ pub(crate) fn decide(
     let mut put = Vec::new();
     let mut append = None;
     let mut next = None;
+    let mut combine = Vec::new();
     let mut protected: Option<Record> = None;
     for record in snapshot.expired {
         if record
@@ -442,12 +447,15 @@ pub(crate) fn decide(
             }
         }
         Command::Next(_) => {
+            let mut candidates: Vec<_> = protected
+                .into_iter()
+                .chain(snapshot.records)
+                .filter(|record| !deleted.contains(&record.metadata.id))
+                .collect();
+            candidates.sort_by(order);
+            let mut candidates = candidates.into_iter();
             if scopes.get(scope).ok_or(Error)?.enabled
-                && let Some(mut record) = protected
-                    .into_iter()
-                    .chain(snapshot.records)
-                    .filter(|record| !deleted.contains(&record.metadata.id))
-                    .min_by(order)
+                && let Some(mut record) = candidates.next()
             {
                 record.metadata.validate()?;
                 if record.scope != scope
@@ -455,6 +463,44 @@ pub(crate) fn decide(
                     || !(1..=MAX_BATCH_BYTES as u32).contains(&record.size)
                 {
                     return Err(Error);
+                }
+                // Combine only before the first claim. Once a sender could have
+                // submitted bytes, every retry must keep that exact payload.
+                // Like the RAM feed, a batch keeps its oldest member's expiry.
+                if record.inflight_until.is_none() && record.metadata.attempts == 0 {
+                    for other in
+                        candidates.filter(|other| other.metadata.signal == record.metadata.signal)
+                    {
+                        other.metadata.validate()?;
+                        if other.scope != scope
+                            || other.metadata.id == record.metadata.id
+                            || other.byte_count != Some(other.size)
+                            || !(1..=MAX_BATCH_BYTES as u32).contains(&other.size)
+                        {
+                            return Err(Error);
+                        }
+                        if other.inflight_until.is_some()
+                            || other.metadata.attempts != 0
+                            || record.metadata.count + other.metadata.count > 32
+                            || record.size + other.size > MAX_BATCH_BYTES as u32
+                        {
+                            break;
+                        }
+                        if combine.is_empty() {
+                            combine.push(record.metadata.id.clone());
+                        }
+                        if !deleted.insert(other.metadata.id.clone()) {
+                            return Err(Error);
+                        }
+                        combine.push(other.metadata.id);
+                        record.metadata.count += other.metadata.count;
+                        record.size += other.size;
+                        global.batches = global.batches.checked_sub(1).ok_or(Error)?;
+                        if global.batches == 0 {
+                            return Err(Error);
+                        }
+                        global_changed = true;
+                    }
                 }
                 record.inflight_until = Some(snapshot.now + u64::from(SENDER_MS));
                 next = Some(record.metadata.clone());
@@ -521,6 +567,7 @@ pub(crate) fn decide(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Plan {
         remove: deleted.into_iter().collect(),
+        combine,
         put,
         append,
         health,
@@ -560,6 +607,181 @@ mod tests {
     }
     fn sender() -> String {
         "00000000-0000-4000-8000-000000000002".into()
+    }
+    fn pending(id: u64, signal: Signal, count: u32, size: u32) -> Record {
+        let mut item = record();
+        item.metadata.id = format!("00000000-0000-4000-8000-{id:012x}");
+        item.metadata.expires_at_ms += id;
+        item.metadata.signal = signal;
+        item.metadata.count = count;
+        item.size = size;
+        item.byte_count = Some(size);
+        item
+    }
+    fn with_records(records: Vec<Record>) -> Snapshot {
+        let mut state = snapshot(0);
+        state.record_count = records.len() as u32;
+        state.health[0]["records"] = records.iter().map(|r| r.metadata.count).sum::<u32>().into();
+        state.health[0]["bytes"] = records
+            .iter()
+            .map(|r| u64::from(r.size))
+            .sum::<u64>()
+            .into();
+        state.health[0]["batches"] = state.record_count.into();
+        for (name, kind) in [("events", Signal::Events), ("traces", Signal::Traces)] {
+            state.health[1][name]["pending"] = records
+                .iter()
+                .filter(|r| r.metadata.signal == kind)
+                .map(|r| r.metadata.count)
+                .sum::<u32>()
+                .into();
+        }
+        state.records = records;
+        state
+    }
+    #[test]
+    fn pending_batches_coalesce_per_signal_without_changing_health_or_extending_expiry() {
+        let first = pending(1, Signal::Events, 2, 4);
+        let trace = pending(2, Signal::Traces, 3, 6);
+        let last = pending(3, Signal::Events, 4, 8);
+        let done = decide(
+            &scope(),
+            &Command::Next(sender()),
+            0,
+            with_records(vec![last.clone(), trace, first.clone()]),
+        )
+        .unwrap();
+        assert_eq!(
+            done.combine,
+            vec![first.metadata.id.clone(), last.metadata.id.clone()]
+        );
+        assert_eq!(done.remove, vec![last.metadata.id]);
+        let selected = done.next.unwrap();
+        assert_eq!(
+            (selected.count, selected.expires_at_ms),
+            (6, first.metadata.expires_at_ms)
+        );
+        assert_eq!(done.put[0].size, 12);
+        assert_eq!(
+            (done.result.events.pending, done.result.traces.pending),
+            (6, 3)
+        );
+        assert_eq!(done.result.events.delivered + done.result.events.dropped, 0);
+        let global = done.global.unwrap();
+        assert_eq!((global.records, global.bytes, global.batches), (9, 18, 2));
+    }
+    #[test]
+    fn coalescing_obeys_transport_bounds_and_stops_at_an_existing_claim() {
+        for (count, size, claimed) in [(31, 4, false), (2, 65533, false), (2, 4, true)] {
+            let first = pending(1, Signal::Events, count, size);
+            let mut second = pending(2, Signal::Events, 2, 4);
+            if claimed {
+                second.inflight_until = Some(0);
+            }
+            let later = pending(3, Signal::Events, 1, 1);
+            let done = decide(
+                &scope(),
+                &Command::Next(sender()),
+                0,
+                with_records(vec![first.clone(), second, later]),
+            )
+            .unwrap();
+            assert!(done.combine.is_empty() && done.remove.is_empty());
+            assert_eq!(done.next.unwrap().count, first.metadata.count);
+            assert_eq!(done.put[0].size, first.size);
+        }
+        let first = pending(1, Signal::Traces, 30, 65532);
+        let second = pending(2, Signal::Traces, 2, 4);
+        let done = decide(
+            &scope(),
+            &Command::Next(sender()),
+            0,
+            with_records(vec![first, second]),
+        )
+        .unwrap();
+        assert_eq!(done.next.unwrap().count, 32);
+        assert_eq!(done.put[0].size, 65536);
+    }
+    #[test]
+    fn a_claimed_combination_keeps_its_original_receipt_and_cannot_absorb_new_records() {
+        let selected = decide(
+            &scope(),
+            &Command::Next(sender()),
+            0,
+            with_records(vec![
+                pending(1, Signal::Events, 2, 4),
+                pending(2, Signal::Events, 2, 4),
+            ]),
+        )
+        .unwrap();
+        let mut batch = selected.put[0].clone();
+        // The adapter physically joined bytes in the same committed transaction.
+        batch.byte_count = Some(batch.size);
+        for (attempts, inflight) in [(0, batch.inflight_until), (1, Some(0))] {
+            batch.metadata.attempts = attempts;
+            batch.inflight_until = inflight;
+            let replay = decide(
+                &scope(),
+                &Command::Next(sender()),
+                0,
+                with_records(vec![batch.clone(), pending(3, Signal::Events, 1, 1)]),
+            )
+            .unwrap();
+            assert!(replay.combine.is_empty() && replay.remove.is_empty());
+            let next = replay.next.unwrap();
+            assert_eq!(
+                (next.id, next.count, next.expires_at_ms),
+                (batch.metadata.id.clone(), 4, batch.metadata.expires_at_ms)
+            );
+            assert_eq!(replay.put[0].size, 8);
+        }
+        let mut state = with_records(vec![batch.clone()]);
+        state.lookup = Some(batch.clone());
+        let done = decide(
+            &scope(),
+            &Command::Finish {
+                sender: sender(),
+                batch: batch.metadata.id,
+                disposition: Disposition::Count {
+                    original: 4,
+                    accepted: 3,
+                },
+            },
+            0,
+            state,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                done.result.events.pending,
+                done.result.events.delivered,
+                done.result.events.dropped
+            ),
+            (0, 3, 1)
+        );
+        let global = done.global.unwrap();
+        assert_eq!((global.records, global.bytes, global.batches), (0, 0, 0));
+    }
+    #[test]
+    fn coalescing_rejects_corrupt_payload_sizes_and_duplicate_ids() {
+        for duplicate in [false, true] {
+            let first = pending(1, Signal::Events, 1, 4);
+            let mut other = pending(2, Signal::Events, 1, 4);
+            if duplicate {
+                other.metadata.id = first.metadata.id.clone();
+            } else {
+                other.byte_count = Some(3);
+            }
+            assert!(
+                decide(
+                    &scope(),
+                    &Command::Next(sender()),
+                    0,
+                    with_records(vec![first, other])
+                )
+                .is_err()
+            );
+        }
     }
     #[test]
     fn count_settlement_validates_before_mutation_and_partial_keeps_full_success_time() {
