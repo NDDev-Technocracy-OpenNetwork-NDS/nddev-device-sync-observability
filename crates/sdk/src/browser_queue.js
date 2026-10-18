@@ -63,7 +63,7 @@ export async function queueOperation(encoded,input,policy) {
     const [values,count,expired,rows,lookup]=await Promise.all([
       request(health.getAll(undefined,read.health_limit)),request(records.count()),
       request(records.index('expiry').getAll(IDBKeyRange.upperBound(now),read.row_limit)),
-      read.scan?request(read.ordered?records.index('scope_expiry').getAll(IDBKeyRange.bound([read.scope,now],[read.scope,read.counter_limit],true,false),1):records.index('scope').getAll(read.scope,read.row_limit)):[],
+      read.scan?request(read.ordered?records.index('scope_expiry').getAll(IDBKeyRange.bound([read.scope,now],[read.scope,read.counter_limit],true,false),read.next_limit):records.index('scope').getAll(read.scope,read.row_limit)):[],
       read.lookup?request(records.get(read.lookup)):null,
     ]);
     const loaded=new Map([...expired,...rows,...(lookup?[lookup]:[])].map(row=>[row.id,row]));
@@ -72,6 +72,11 @@ export async function queueOperation(encoded,input,policy) {
     const plan=JSON.parse(policy(JSON.stringify({now,health:values,record_count:count,
       expired:expired.map(metadata),records:rows.map(metadata),lookup:lookup?metadata(lookup):null,
       held_scope:read.sender&&senders.get(read.sender)?.held?senders.get(read.sender).scope:null})));
+    if(plan.combine.length){
+      const parts=plan.combine.map(id=>loaded.get(id).bytes),joined=new Uint8Array(parts.reduce((size,part)=>size+part.length,0));
+      let offset=0;for(const part of parts){joined.set(part,offset);offset+=part.length;}
+      const id=plan.next.id;loaded.set(id,{...loaded.get(id),bytes:joined});
+    }
     for(const id of plan.remove)records.delete(id);
     for(const row of plan.put)records.put({...loaded.get(row.id),...row});
     if(plan.append)records.add({...plan.append,bytes});
