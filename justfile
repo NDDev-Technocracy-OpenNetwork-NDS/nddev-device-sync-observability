@@ -3,7 +3,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list
 
-check:
+check: browser-check
     cargo fmt --all -- --check
     cargo test --workspace --all-features --locked --jobs 4
     cargo clippy --workspace --all-targets --all-features --locked --jobs 4 -- -D warnings
@@ -19,3 +19,8 @@ sdk-wasm-check:
 
 protocol-check:
     python3 scripts/check-protocol.py
+
+browser-check:
+    bun install --frozen-lockfile --ignore-scripts
+    bun run check
+    bun run check:generated

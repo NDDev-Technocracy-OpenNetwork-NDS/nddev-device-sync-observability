@@ -4,3 +4,4 @@ target
 secrets
 data
 .server-acceptance-source/
+node_modules/
