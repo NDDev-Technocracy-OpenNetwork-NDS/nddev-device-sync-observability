@@ -5,7 +5,8 @@ use crate::Error;
 use std::time::Instant;
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex, MutexGuard, Weak},
+    task::{Poll, Waker},
     time::Duration,
 };
 #[cfg(target_arch = "wasm32")]
@@ -36,6 +37,7 @@ struct State {
     sequence: u64,
     enabled: bool,
     closed: bool,
+    waiter: Option<Waker>,
 }
 impl State {
     fn new() -> Self {
@@ -49,6 +51,7 @@ impl State {
             sequence: 0,
             enabled: true,
             closed: false,
+            waiter: None,
         }
     }
     fn discard(&mut self, count: u32) {
@@ -81,6 +84,20 @@ impl State {
                 created: Instant::now(),
             });
         }
+    }
+}
+
+// Wake outside the state lock: a consumer may immediately try to drain it.
+fn wake_ready(mut state: MutexGuard<'_, State>) {
+    let waiter = if state.closed || state.enabled && state.inflight == 0 && !state.items.is_empty()
+    {
+        state.waiter.take()
+    } else {
+        None
+    };
+    drop(state);
+    if let Some(waiter) = waiter {
+        waiter.wake();
     }
 }
 /// Validate an opaque batch's transport count before any health mutation.
@@ -128,6 +145,7 @@ impl ExportBatch {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.inflight -= self.count;
         self.settled = true;
+        wake_ready(state);
     }
     pub fn acknowledge(mut self) {
         self.acknowledge_count(i64::from(self.count))
@@ -149,6 +167,7 @@ impl ExportBatch {
             .min(MAX_COUNTER);
         state.discard(dropped);
         self.settled = true;
+        wake_ready(state);
         Ok(())
     }
 }
@@ -158,6 +177,7 @@ impl Drop for ExportBatch {
         if !self.settled {
             state.inflight -= self.count;
             state.discard(self.count);
+            wake_ready(state);
         }
     }
 }
@@ -202,6 +222,7 @@ impl Router {
             let mut queue = queue.lock().unwrap_or_else(|error| error.into_inner());
             if queue.enabled && !queue.closed {
                 queue.push(bytes);
+                wake_ready(queue);
             }
         }
     }
@@ -227,10 +248,35 @@ impl Router {
                 }
                 Err(_) => queue.discard(1),
             }
+            wake_ready(queue);
         }
     }
 }
 impl ExportFeed {
+    /// Wake the single asynchronous drainer when a batch can be taken or the
+    /// feed closes. This does not take ownership, change bounds or settle data.
+    pub async fn ready(&self) {
+        std::future::poll_fn(|context| {
+            let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+            state.expire();
+            if state.closed || state.enabled && state.inflight == 0 && !state.items.is_empty() {
+                return Poll::Ready(());
+            }
+            let previous = if state
+                .waiter
+                .as_ref()
+                .is_none_or(|w| !w.will_wake(context.waker()))
+            {
+                state.waiter.replace(context.waker().clone())
+            } else {
+                None
+            };
+            drop(state);
+            drop(previous);
+            Poll::Pending
+        })
+        .await
+    }
     /// One batch, at most 32 complete records / 64 KiB. Concurrent drains are
     /// rejected so retries cannot reorder this producer's sequence.
     pub fn take_batch(&self) -> Option<ExportBatch> {
@@ -268,11 +314,13 @@ impl ExportFeed {
         if !enabled {
             state.clear();
         }
+        wake_ready(state);
     }
     pub fn close(&self) {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
         state.closed = true;
         state.clear();
+        wake_ready(state);
     }
     pub fn health(&self) -> FeedHealth {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
@@ -294,8 +342,135 @@ impl Drop for ExportFeed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        future::Future,
+        sync::atomic::{AtomicUsize, Ordering},
+        task::{Context, Wake},
+    };
+
+    struct Consumer {
+        state: Weak<Mutex<State>>,
+        wakes: AtomicUsize,
+    }
+    impl Consumer {
+        fn new(feed: &ExportFeed) -> Arc<Self> {
+            Arc::new(Self {
+                state: Arc::downgrade(&feed.0),
+                wakes: AtomicUsize::new(0),
+            })
+        }
+        fn count(&self) -> usize {
+            self.wakes.load(Ordering::SeqCst)
+        }
+    }
+    impl Wake for Consumer {
+        fn wake(self: Arc<Self>) {
+            // A runtime can immediately re-enter the feed from its callback.
+            assert!(self.state.upgrade().unwrap().try_lock().is_ok());
+            self.wakes.fetch_add(1, Ordering::SeqCst);
+        }
+    }
     fn event(router: &Router) {
         router.enqueue(&serde_json::Map::new());
+    }
+    #[test]
+    fn arrival_wakes_idle_consumer_without_taking_the_batch() {
+        let router = Router::default();
+        let feed = router.subscribe().unwrap();
+        let consumer = Consumer::new(&feed);
+        let waker = Waker::from(consumer.clone());
+        let mut context = Context::from_waker(&waker);
+        let mut ready = Box::pin(feed.ready());
+        assert!(ready.as_mut().poll(&mut context).is_pending());
+        event(&router);
+        event(&router);
+        assert_eq!(consumer.count(), 1);
+        assert!(ready.as_mut().poll(&mut context).is_ready());
+        assert_eq!(feed.health().pending, 2);
+        feed.take_batch().unwrap().acknowledge();
+        assert_eq!(feed.health().delivered, 2);
+        assert_eq!(feed.health().dropped, 0);
+    }
+    #[test]
+    fn queued_records_wait_for_the_original_batch_to_settle() {
+        for acknowledge in [true, false] {
+            let router = Router::default();
+            let feed = router.subscribe().unwrap();
+            event(&router);
+            let first = feed.take_batch().unwrap();
+            let consumer = Consumer::new(&feed);
+            let waker = Waker::from(consumer.clone());
+            let mut context = Context::from_waker(&waker);
+            let mut ready = Box::pin(feed.ready());
+            assert!(ready.as_mut().poll(&mut context).is_pending());
+            event(&router);
+            assert_eq!(consumer.count(), 0);
+            assert!(feed.take_batch().is_none());
+            if acknowledge {
+                first.acknowledge();
+            } else {
+                drop(first);
+            }
+            assert_eq!(consumer.count(), 1);
+            assert!(ready.as_mut().poll(&mut context).is_ready());
+            let second = feed.take_batch().unwrap();
+            let record: serde_json::Value = serde_json::from_slice(second.bytes()).unwrap();
+            assert_eq!(record["producer.sequence"], 2);
+            second.acknowledge();
+            assert_eq!(feed.health().delivered, if acknowledge { 2 } else { 1 });
+            assert_eq!(feed.health().dropped, if acknowledge { 0 } else { 1 });
+        }
+    }
+    #[test]
+    fn cancelled_wait_can_be_replaced_and_close_wakes_the_current_consumer() {
+        let router = Router::default();
+        let feed = router.subscribe().unwrap();
+        let old = Consumer::new(&feed);
+        let old_waker = Waker::from(old.clone());
+        let mut cancelled = Box::pin(feed.ready());
+        assert!(
+            cancelled
+                .as_mut()
+                .poll(&mut Context::from_waker(&old_waker))
+                .is_pending()
+        );
+        drop(cancelled);
+        let current = Consumer::new(&feed);
+        let waker = Waker::from(current.clone());
+        let mut context = Context::from_waker(&waker);
+        let mut ready = Box::pin(feed.ready());
+        assert!(ready.as_mut().poll(&mut context).is_pending());
+        feed.set_enabled(false);
+        event(&router);
+        assert!(ready.as_mut().poll(&mut context).is_pending());
+        assert_eq!(current.count(), 0);
+        feed.close();
+        assert_eq!((old.count(), current.count()), (0, 1));
+        assert!(ready.as_mut().poll(&mut context).is_ready());
+        assert!(feed.take_batch().is_none());
+    }
+    #[cfg(feature = "client-traces")]
+    #[test]
+    fn trace_arrival_before_and_after_registration_are_both_ready() {
+        let router = Router::default();
+        let feed = router.subscribe().unwrap();
+        router.enqueue_span(vec![1]);
+        let consumer = Consumer::new(&feed);
+        let waker = Waker::from(consumer.clone());
+        let mut context = Context::from_waker(&waker);
+        assert!(
+            Box::pin(feed.ready())
+                .as_mut()
+                .poll(&mut context)
+                .is_ready()
+        );
+        feed.take_batch().unwrap().acknowledge();
+        let mut ready = Box::pin(feed.ready());
+        assert!(ready.as_mut().poll(&mut context).is_pending());
+        router.enqueue_span(vec![2]);
+        assert_eq!(consumer.count(), 1);
+        assert!(ready.as_mut().poll(&mut context).is_ready());
+        assert_eq!(feed.take_batch().unwrap().bytes(), &[2]);
     }
     #[test]
     fn accepted_count_settles_owned_native_batch_once_without_changing_bytes() {
