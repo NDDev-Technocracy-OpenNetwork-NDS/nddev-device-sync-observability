@@ -121,8 +121,9 @@ Run `just check`, `just protocol-check`, `just sdk-check` and `just integration`
 `just sdk-wasm-check` checks the stable Rust browser target; it is a compilation
 gate, separate from real browser execution and pipeline qualification.
 Integration requires Docker Engine >=28.2.0 for finite Fluent write timeouts;
-CI pins 29.9.0. It builds an
-immutable existing server checkout snapshot and starts only temporary generated
+CI pins 29.9.1. Integration requires a clean, committed collector checkout. It
+builds immutable collector and locked server snapshots, passes each exact commit
+into its build and verifies their searchable source identities. It starts only temporary generated
 accounts/data in an isolated Compose project, then removes its own resources.
 The Compose pipeline exposes only the Fluent collector on loopback; its data
 services remain internal. Runtime memory caps fit an 8 GiB single-node plan.
