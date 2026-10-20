@@ -29,7 +29,6 @@ assert SERVER_LOCK['source_repo']=='NDDev-Technocracy-OpenNetwork-NDS/nddev-devi
 SERVER_SOURCE=SERVER_LOCK['source_commit']
 assert re.fullmatch('[a-f0-9]{40}',SERVER_SOURCE)
 SERVER_IMAGE='nds-server-acceptance:'+SERVER_SOURCE[:12]
-OBS_IMAGE='nds-observability-acceptance:local'
 DEBIAN='debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f'
 PG='postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c'
 
@@ -82,6 +81,10 @@ def main():
     args=parser.parse_args()
     if not 60 <= args.fixture_seconds <= 3600: parser.error('fixture lifetime must be 60..3600 seconds')
     if args.fixture_receipt is not None and (not args.fixture_receipt.is_absolute() or args.fixture_receipt.resolve().is_relative_to(ROOT) or args.fixture_receipt.exists()): parser.error('fixture receipt must be a new absolute path outside source')
+    assert not command('git','status','--porcelain',cwd=ROOT).stdout.strip(), 'commit collector changes before source-qualified integration'
+    obs_source=command('git','rev-parse','HEAD',cwd=ROOT).stdout.strip()
+    assert re.fullmatch('[a-f0-9]{40}',obs_source)
+    obs_image='nds-observability-acceptance:'+obs_source[:12]
     command('cargo','build','--locked','-p','nddev-device-sync-telemetry','--example','sdk_probe',cwd=ROOT,timeout=180)
     source_names=['nddev-device-sync-server','nddev-device-sync-observability','sdk-acceptance']
     client_events=[]
@@ -116,16 +119,19 @@ def main():
             values['server_'+key]=f'postgres://{role}:{password}@server-postgres:5432/nds'
         for key,value in values.items():
             path=private/key;path.write_text(value+'\n');path.chmod(0o444)
-        env=os.environ.copy();env.update(NDS_TEST_SECRETS=str(private),NDS_FLUENT_PORT=str(free_port()),NDS_OBS_IMAGE=OBS_IMAGE,NDS_OO_USER=values['oo_user'],NDS_OO_PASSWORD=values['oo_password'],NDS_SOURCE_STALE_SECONDS='5')
+        env=os.environ.copy();env.update(NDS_TEST_SECRETS=str(private),NDS_FLUENT_PORT=str(free_port()),NDS_OBS_IMAGE=obs_image,NDS_OO_USER=values['oo_user'],NDS_OO_PASSWORD=values['oo_password'],NDS_SOURCE_STALE_SECONDS='5')
         server_dir=directory/'server';server_dir.mkdir()
         archive=subprocess.check_output(['git','-C',os.environ.get('NDS_SERVER_SOURCE_DIR',str(ROOT.parent/'nddev-device-sync-server')),'archive',SERVER_SOURCE])
         with tarfile.open(fileobj=io.BytesIO(archive)) as tree:tree.extractall(server_dir,filter='data')
         if command('docker','image','inspect',SERVER_IMAGE,check=False).returncode:
             command('docker','build','--tag',SERVER_IMAGE,'--build-arg','NDS_SOURCE_COMMIT='+SERVER_SOURCE,str(server_dir),timeout=900)
-        command('docker','build','--tag',OBS_IMAGE,str(ROOT),timeout=900)
+        obs_dir=directory/'observability';obs_dir.mkdir()
+        archive=subprocess.check_output(['git','-C',str(ROOT),'archive',obs_source])
+        with tarfile.open(fileobj=io.BytesIO(archive)) as tree:tree.extractall(obs_dir,filter='data')
+        command('docker','build','--tag',obs_image,'--build-arg','NDS_SOURCE_COMMIT='+obs_source,str(obs_dir),timeout=900)
         override={'services':{
             'observability':{'environment':{'NDS_EXPECTED_SOURCES':','.join(source_names)}},
-            'probe':{'image':OBS_IMAGE,'entrypoint':['sleep','infinity'],'read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],'mem_limit':'32m','pids_limit':16,'networks':['pipeline']},
+            'probe':{'image':obs_image,'entrypoint':['sleep','infinity'],'read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],'mem_limit':'32m','pids_limit':16,'networks':['pipeline']},
             'server-postgres':{'image':PG,'user':'postgres','read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],'mem_limit':'512m','pids_limit':128,'environment':{'POSTGRES_DB':'nds','POSTGRES_PASSWORD_FILE':'/run/secrets/postgres_admin_password'},'secrets':['postgres_admin_password','postgres_migrator_password','postgres_runtime_password'],'volumes':[f'{server_dir}/deploy/postgres-init.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro'],'tmpfs':['/var/lib/postgresql:uid=999,gid=999,mode=0700,size=256m','/var/run/postgresql:uid=999,gid=999,mode=3775,size=16m','/tmp:uid=999,gid=999,mode=1777,size=16m'],'networks':['pipeline'],'healthcheck':{'test':['CMD-SHELL','pg_isready -U postgres -d nds -h 127.0.0.1'],'interval':'1s','timeout':'2s','retries':30}},
             'server-migrate':{'image':SERVER_IMAGE,'command':['migrate'],'mem_limit':'256m','read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],'environment':{'NDS_MIGRATION_DATABASE_URL_FILE':'/run/secrets/server_migration_url'},'secrets':['server_migration_url'],'networks':['pipeline'],'depends_on':{'server-postgres':{'condition':'service_healthy'}}},
             'server':{'image':SERVER_IMAGE,'command':['serve'],'read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],'mem_limit':'512m','pids_limit':64,'environment':{'DATABASE_URL_FILE':'/run/secrets/server_runtime_url','NDS_SERVER_ADDR':'0.0.0.0:8080','NDS_MAX_REQUESTS':'1','NDS_MAX_CONNECTIONS':'4'},'secrets':['server_runtime_url'],'networks':['pipeline'],'depends_on':{'server-migrate':{'condition':'service_completed_successfully'}},'logging':{'driver':'fluentd','options':{'fluentd-address':'127.0.0.1:'+env['NDS_FLUENT_PORT'],'fluentd-async':'true','fluentd-buffer-limit':'256','fluentd-max-retries':'3','fluentd-retry-wait':'1s','fluentd-write-timeout':'2s','fluentd-async-reconnect-interval':'1s','mode':'non-blocking','max-buffer-size':'1m','cache-max-size':'2m','cache-max-file':'2'}}},
@@ -164,6 +170,7 @@ def main():
             assert len(completed)==1, 'one actual migration completion required'
             assert completed[0]['migration.version']==int(sql('postgres',"SELECT value FROM nds_observability_meta WHERE key='schema'")), 'migration telemetry must identify the actual schema'
             assert completed[0]['standards.release']==tomllib.loads((ROOT/'standarts.lock').read_text())['source_release'], 'telemetry standards must match the consumed lock'
+            assert completed[0]['source.commit']==obs_source, 'migration telemetry must identify the actual collector source'
             if args.fixture_receipt is not None:
                 # These are generated fixture credentials, never operator files.
                 for name in ['ingest_token','admin_token']:
@@ -172,7 +179,7 @@ def main():
                 gateway.write_text(json.dumps({'origin':f"http://127.0.0.1:{fixture_ports['observability']}", 'trace_origin':f"http://127.0.0.1:{fixture_ports['vector']}", 'ingest_token_file':str(directory/'ingest_token-host'), 'admin_token_file':str(directory/'admin_token-host')}));gateway.chmod(0o600)
                 query=directory/'query.json';query.write_text(json.dumps({'origin':f"http://127.0.0.1:{fixture_ports['openobserve']}",'user':values['oo_user'],'password':values['oo_password']}));query.chmod(0o600)
                 receipt=args.fixture_receipt;stop=receipt.with_suffix('.stop')
-                state={'status':'running','gateway_config':str(gateway),'query_config':str(query),'project':project,'stop_marker':str(stop),'expires_at_unix':int(time.time())+args.fixture_seconds}
+                state={'status':'running','gateway_config':str(gateway),'query_config':str(query),'project':project,'stop_marker':str(stop),'expires_at_unix':int(time.time())+args.fixture_seconds,'sources':{'observability':obs_source,'server':SERVER_SOURCE}}
                 with receipt.open('x') as handle: json.dump(state,handle)
                 receipt.chmod(0o600)
                 print('Isolated observability fixture ready; private receipt written outside source.',flush=True)
@@ -199,6 +206,9 @@ def main():
                 return json.loads(body).get('hits',[])
             logs=eventually(lambda:search('nds','logs',"trace_id='"+trace+"'"))
             assert any(row.get('source_commit',row.get('source.commit'))==SERVER_SOURCE for row in logs)
+            collector_logs=eventually(lambda:search('nds','logs',"service_name='nddev-device-sync-observability' AND event_name='server.started'"))
+            assert any(row.get('source_commit',row.get('source.commit'))==obs_source for row in collector_logs)
+            print('Searchable source identities verified: collector '+obs_source+'; server '+SERVER_SOURCE)
             def streams(kind):
                 code,body=request(oo+'/api/default/streams?type='+kind,headers=oo_headers)
                 assert code==200
