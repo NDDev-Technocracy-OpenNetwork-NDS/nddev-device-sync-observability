@@ -23,7 +23,9 @@ import urllib.request
 import uuid
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-TARGET=pathlib.Path(os.environ.get("CARGO_TARGET_DIR", ROOT/"target"))
+TARGET=pathlib.Path(json.loads(subprocess.check_output(
+    ['cargo','metadata','--locked','--no-deps','--format-version','1'],
+    cwd=ROOT,text=True,timeout=30))['target_directory'])
 SERVER_LOCK=tomllib.loads((ROOT/'acceptance-server.lock').read_text())
 assert SERVER_LOCK['source_repo']=='NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-server'
 SERVER_SOURCE=SERVER_LOCK['source_commit']

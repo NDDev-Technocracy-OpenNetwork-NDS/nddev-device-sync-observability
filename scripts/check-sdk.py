@@ -5,7 +5,9 @@ import json
 import pathlib
 import subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-TARGET=pathlib.Path(os.environ.get("CARGO_TARGET_DIR", ROOT/"target"))
+TARGET=pathlib.Path(json.loads(subprocess.check_output(
+    ['cargo','metadata','--locked','--no-deps','--format-version','1'],
+    cwd=ROOT,text=True,timeout=30))['target_directory'])
 subprocess.run(['cargo','build','--locked','-p','nddev-device-sync-telemetry','--example','sdk_probe'],cwd=ROOT,check=True)
 result=subprocess.run([TARGET/'debug/examples/sdk_probe'],capture_output=True,check=True,timeout=5)
 assert len(result.stdout)<128*1024
