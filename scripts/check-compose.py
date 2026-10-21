@@ -23,7 +23,9 @@ import urllib.request
 import uuid
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-TARGET=pathlib.Path(os.environ.get("CARGO_TARGET_DIR", ROOT/"target"))
+TARGET=pathlib.Path(json.loads(subprocess.check_output(
+    ['cargo','metadata','--locked','--no-deps','--format-version','1'],
+    cwd=ROOT,text=True,timeout=30))['target_directory'])
 SERVER_LOCK=tomllib.loads((ROOT/'acceptance-server.lock').read_text())
 assert SERVER_LOCK['source_repo']=='NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-server'
 SERVER_SOURCE=SERVER_LOCK['source_commit']
@@ -250,10 +252,16 @@ def main():
             audit=next(event for event in map(json.loads,audit_output.splitlines()) if event['event.name']=='company.command.completed')
             assert ingest([audit])['accepted']==1
             assert ingest([audit])['duplicates']==1
-            indexed=eventually(lambda:search('nds','logs',"trace_id='"+audit['trace_id']+"'"))
-            record=next(row for row in indexed if row.get('event_name',row.get('event.name'))=='company.command.completed')
-            for field in ['operation.id','target.user.id','invitation.id','auth_method']:
-                assert record.get(field.replace('.','_'),record.get(field))==audit[field]
+            fields=['operation.id','target.user.id','invitation.id','auth_method']
+            def complete_audit():
+                indexed=search('nds','logs',"trace_id='"+audit['trace_id']+"'")
+                return next((row for row in indexed
+                    if row.get('event_name',row.get('event.name'))=='company.command.completed'
+                    and all(row.get(field.replace('.','_'),row.get(field))==audit[field] for field in fields)),None)
+            # Search visibility and schema projection can arrive separately.
+            # The bounded gate requires the complete original audit, not merely
+            # a first row with the same trace.
+            eventually(complete_audit)
             print('Actual SDK company audit and passkey method survive canonical ingress, replay deduplication, Vector and OpenObserve search')
 
             # The real SDK's frames pass the same context enrichment boundary
