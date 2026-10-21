@@ -255,7 +255,7 @@ def main():
             indexed=eventually(lambda:search('nds','logs',"trace_id='"+audit['trace_id']+"'"))
             record=next(row for row in indexed if row.get('event_name',row.get('event.name'))=='company.command.completed')
             for field in ['operation.id','target.user.id','invitation.id','auth_method']:
-                assert record.get(field.replace('.','_'),record.get(field))==audit[field]
+                assert record.get(field.replace('.','_'),record.get(field))==audit[field], 'indexed audit field differs: '+field
             print('Actual SDK company audit and passkey method survive canonical ingress, replay deduplication, Vector and OpenObserve search')
 
             # The real SDK's frames pass the same context enrichment boundary
