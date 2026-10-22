@@ -1,0 +1,96 @@
+name: main-ci
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-validation
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: package.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.15.0'
+      - name: Install locked Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+      - name: Install pinned quality tools
+        run: |
+          cargo install --locked --version 0.22.2 cargo-audit
+          cargo install --locked --version 0.20.2 cargo-deny
+      - name: Run the STD-0004 native Rust contract
+        id: native
+        uses: NDDev-Technocracy-Standarts/std-0004-ci-cd-workflows/.github/actions/ci@a77e385fcf3c1b000c38167ecac7b74bb7715b10 # std-0004-v0.3.1
+      - name: Require complete native results
+        if: ${{ !cancelled() }}
+        env:
+          STATUS: ${{ steps.native.outputs.status }}
+        run: test "$STATUS" = success
+
+  android-targets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install locked Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy --target aarch64-linux-android,x86_64-linux-android
+      - name: Check native Android sink compilation
+        run: |
+          cargo clippy --locked -p nddev-device-sync-telemetry --all-targets --target aarch64-linux-android -- -D warnings
+          cargo clippy --locked -p nddev-device-sync-telemetry --all-targets --target x86_64-linux-android -- -D warnings
+
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.15.0'
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3
+        with:
+          just-version: '1.59.0'
+      - name: Read immutable acceptance server source
+        id: fixture
+        run: |
+          python - <<'PYTHON' >> "$GITHUB_OUTPUT"
+          import re,tomllib
+          value=tomllib.load(open('acceptance-server.lock','rb'))
+          assert value['source_repo']=='NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-server'
+          assert re.fullmatch('[a-f0-9]{40}',value['source_commit'])
+          print('commit='+value['source_commit'])
+          PYTHON
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-server
+          ref: ${{ steps.fixture.outputs.commit }}
+          path: .server-acceptance-source
+          persist-credentials: false
+      - name: Install bounded Fluent transport support
+        uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70
+        with:
+          version: type=image,tag=29.9.1
+      - name: Verify the selected Docker engine
+        run: test "$(docker version --format '{{.Server.Version}}')" = '29.9.1'
+      - name: Verify real pipeline and durable incident lifecycle
+        env:
+          NDS_SERVER_SOURCE_DIR: ${{ github.workspace }}/.server-acceptance-source
+        run: just integration

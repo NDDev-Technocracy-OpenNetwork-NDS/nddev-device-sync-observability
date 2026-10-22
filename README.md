@@ -138,3 +138,5 @@ directory secret backend, without environment interpolation. OpenObserve vendor
 telemetry, model pricing synchronization and GeoIP downloads are disabled.
 OpenObserve retention is three days; the Rust outbox is capped at 4,096 events
 and 64 MiB with finite retries and expiry. Rust dependencies are in `Cargo.lock`.
+
+Release journals live in [GitHub Releases](https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-observability/releases).

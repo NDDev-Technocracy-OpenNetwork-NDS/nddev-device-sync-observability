@@ -1,2 +1,7 @@
+* text=auto eol=lf
+
+.nds/generated.json linguist-generated
+CLAUDE.md linguist-generated
+
 crates/sdk/src/browser_queue.js linguist-generated=true
 crates/sdk/src/output/console.js linguist-generated=true
