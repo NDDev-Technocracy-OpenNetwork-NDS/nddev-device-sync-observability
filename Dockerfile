@@ -7,7 +7,7 @@ COPY rust-toolchain.toml ./
 RUN test "$(dpkg --print-architecture)" = "$TARGETARCH" && rustup show active-toolchain && rustc --version
 ARG NDS_SOURCE_COMMIT=unknown
 ENV NDS_SOURCE_COMMIT=${NDS_SOURCE_COMMIT}
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs standarts.lock ./
 COPY crates ./crates
 COPY src ./src
 COPY contracts ./contracts
