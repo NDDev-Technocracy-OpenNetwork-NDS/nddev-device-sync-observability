@@ -11,7 +11,7 @@ fn main() -> std::process::ExitCode {
         repository: "NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-observability".into(),
         commit: option_env!("NDS_SOURCE_COMMIT").unwrap_or("unknown").into(),
         channel: "alpha".into(),
-        standards: "unreleased".into(),
+        standards: env!("NDS_STANDARDS_RELEASE").into(),
         environment: "self-hosted".into(),
         target_prefixes: vec!["nddev_device_sync_observability".into()],
         default_module: "process".into(),
