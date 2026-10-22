@@ -5,3 +5,4 @@
 __pycache__/
 .server-acceptance-source/
 /node_modules/
+.nddev-reports/

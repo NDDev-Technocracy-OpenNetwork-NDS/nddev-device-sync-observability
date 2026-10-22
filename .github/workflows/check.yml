@@ -1,19 +1,21 @@
 name: NDS observability checks
+
 on:
   pull_request:
     branches: [main, dev]
-  push:
-    branches: [main, dev]
   workflow_dispatch:
+
 permissions:
   contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
 jobs:
   quality:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -24,51 +26,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.15.0'
-      - name: Read immutable acceptance server source
-        id: fixture
-        run: |
-          python - <<'PYTHON' >> "$GITHUB_OUTPUT"
-          import re,tomllib
-          value=tomllib.load(open('acceptance-server.lock','rb'))
-          assert value['source_repo']=='NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-server'
-          assert re.fullmatch('[a-f0-9]{40}',value['source_commit'])
-          print('commit='+value['source_commit'])
-          PYTHON
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-server
-          ref: ${{ steps.fixture.outputs.commit }}
-          path: .server-acceptance-source
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-        with:
-          node-version: '24.22.0'
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3
-        with:
-          just-version: '1.59.0'
       - name: Install locked Rust toolchain
-        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy --target aarch64-linux-android,x86_64-linux-android,wasm32-unknown-unknown
-      - run: just check
-      - run: just protocol-check
-      - run: just sdk-check
-      - run: just sdk-wasm-check
-      - name: Check native Android sink compilation
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+      - name: Install pinned quality tools
         run: |
-          cargo clippy --locked -p nddev-device-sync-telemetry --all-targets --target aarch64-linux-android -- -D warnings
-          cargo clippy --locked -p nddev-device-sync-telemetry --all-targets --target x86_64-linux-android -- -D warnings
-      - name: Audit locked dependencies and licenses
-        run: |
-          cargo install cargo-audit --version 0.22.2 --locked
-          cargo install cargo-deny --version 0.20.2 --locked
-          cargo audit
-          cargo deny check licenses sources
-      - name: Install bounded Fluent transport support
-        uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70
-        with:
-          version: type=image,tag=29.9.1
-      - name: Verify the selected Docker engine
-        run: test "$(docker version --format '{{.Server.Version}}')" = '29.9.1'
-      - name: Verify real pipeline and durable incident lifecycle
+          cargo install --locked --version 0.22.2 cargo-audit
+          cargo install --locked --version 0.20.2 cargo-deny
+      - name: Run the STD-0004 native Rust contract
+        id: native
+        uses: NDDev-Technocracy-Standarts/std-0004-ci-cd-workflows/.github/actions/ci@a77e385fcf3c1b000c38167ecac7b74bb7715b10 # std-0004-v0.3.1
+      - name: Require complete native results
+        if: ${{ !cancelled() }}
         env:
-          NDS_SERVER_SOURCE_DIR: ${{ github.workspace }}/.server-acceptance-source
-        run: just integration
+          STATUS: ${{ steps.native.outputs.status }}
+        run: test "$STATUS" = success
