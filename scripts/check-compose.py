@@ -8,6 +8,7 @@ import datetime
 import concurrent.futures
 import io
 import json
+import math
 import os
 import pathlib
 import secrets
@@ -197,6 +198,7 @@ def main():
             def status():
                 code,body=request(obs+'/v2/observability/status',token=values['admin_token']);assert code==200;return json.loads(body)
             eventually(lambda:status()['delivered_events']>0)
+            metrics_since=time.time_ns()//1000
             trace=uuid.uuid4().hex
             assert request(server+'/v1/health',headers={'traceparent':'00-'+trace+'-'+secrets.token_hex(8)+'-01'})[0]==200
             def search(table,kind,where):
@@ -220,6 +222,20 @@ def main():
             assert spans
             metric_streams=eventually(lambda:streams('metrics'))
             assert any(name.startswith('nds_observability_events_accepted') for name in metric_streams)
+            # src/signals.rs emits this cumulative counter with service identity.
+            # Pinned OpenObserve v1.1.0 stores numeric `value` and the resource/
+            # scope fields below. A stream or export ACK alone is insufficient.
+            collector_version=tomllib.loads((ROOT/'Cargo.toml').read_text())['package']['version']
+            def current_collector_counter():
+                rows=search('nds_observability_events_accepted','metrics',
+                    "service_name='nddev-device-sync-observability' "
+                    "AND instrumentation_library_name='nds-observability' "
+                    f'AND _timestamp >= {metrics_since}')
+                return next((row for row in rows
+                    if row.get('service_version')==collector_version
+                    and type(row.get('value')) in (int,float)
+                    and math.isfinite(row['value']) and row['value']>0),None)
+            eventually(current_collector_counter)
             eventually(lambda:status()['metrics']['successes']>0 and status()['traces']['successes']>0)
             print('Actual server trace-correlated log searchable; native processing OTLP span and operational metrics searchable')
             def incidents():
