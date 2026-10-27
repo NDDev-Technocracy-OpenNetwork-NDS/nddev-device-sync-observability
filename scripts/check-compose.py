@@ -133,6 +133,10 @@ def main():
         with tarfile.open(fileobj=io.BytesIO(archive)) as tree:tree.extractall(obs_dir,filter='data')
         command('docker','build','--tag',obs_image,'--build-arg','NDS_SOURCE_COMMIT='+obs_source,str(obs_dir),timeout=900)
         override={'services':{
+            # Archive modes survive a restrictive checkout umask; both binds
+            # replace only the canonical Compose entries with these targets.
+            'postgres':{'volumes':[f'{obs_dir}/deploy/postgres-init.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro']},
+            'vector':{'volumes':[f'{obs_dir}/deploy/vector.yaml:/etc/vector/vector.yaml:ro']},
             'observability':{'environment':{'NDS_EXPECTED_SOURCES':','.join(source_names)}},
             'probe':{'image':obs_image,'entrypoint':['sleep','infinity'],'read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],'mem_limit':'32m','pids_limit':16,'networks':['pipeline']},
             'server-postgres':{'image':PG,'user':'postgres','read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],'mem_limit':'512m','pids_limit':128,'environment':{'POSTGRES_DB':'nds','POSTGRES_PASSWORD_FILE':'/run/secrets/postgres_admin_password'},'secrets':['postgres_admin_password','postgres_migrator_password','postgres_runtime_password'],'volumes':[f'{server_dir}/deploy/postgres-init.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro'],'tmpfs':['/var/lib/postgresql:uid=999,gid=999,mode=0700,size=256m','/var/run/postgresql:uid=999,gid=999,mode=3775,size=16m','/tmp:uid=999,gid=999,mode=1777,size=16m'],'networks':['pipeline'],'healthcheck':{'test':['CMD-SHELL','pg_isready -U postgres -d nds -h 127.0.0.1'],'interval':'1s','timeout':'2s','retries':30}},
