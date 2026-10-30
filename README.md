@@ -136,7 +136,11 @@ the [publisher's registry](https://openobserve.ai/downloads/) with the same OSS
 manifest digest previously qualified from ECR. Vector uses its native
 directory secret backend, without environment interpolation. OpenObserve vendor
 telemetry, model pricing synchronization and GeoIP downloads are disabled.
-OpenObserve retention is three days; the Rust outbox is capped at 4,096 events
+OpenObserve's default diagnostic retention is seven days; the Rust outbox is capped at 4,096 events
 and 64 MiB with finite retries and expiry. Rust dependencies are in `Cargo.lock`.
+Local delivery expiry and functional history retain their separate policies.
+The storage default does not override existing per-stream retention settings;
+qualify the selected deployment and its overrides before claiming a one-week
+retention result. Source configuration alone does not change a running service.
 
 Release journals live in [GitHub Releases](https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-observability/releases).
