@@ -1,5 +1,5 @@
 # std-0001 repository manifest — schema: `nddev schema manifest`.
-apiVersion: nddev.ai/v1alpha3
+apiVersion: nddev.ai/v1alpha4
 kind: Repository
 metadata:
   id: nddev-device-sync-observability
@@ -8,7 +8,6 @@ metadata:
 spec:
   standard:
     id: std-0001
-    version: 3.0.0
   role: component
   profiles:
   - rust
@@ -23,38 +22,15 @@ spec:
   - name: telemetry
     source: crates/sdk/src/lib.rs
     direction: code-first
-  variations:
-  - paths: [.gds]
-    purpose: config
-    reason: GDS-owned repository anchor and policy projections; std-0001 excludes .gds by its own boundary rule.
-    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
-  - paths: [module.yaml]
-    purpose: manifest
-    reason: NDS module descriptor owned by the product standards corpus.
-    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
-  - paths: [standarts.lock, acceptance-server.lock]
-    purpose: lock
-    reason: NDS contract locks pinning the standards and acceptance fixture sources.
-    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
-  - paths: [migrations]
-    purpose: infrastructure
-    reason: Ordered PostgreSQL schema migrations owned by the observability pipeline.
-    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
-  - paths: [contracts]
-    purpose: manifest
-    reason: Owned telemetry and control-plane schema surfaces published by this repository.
-    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
-  - paths: [scripts]
-    purpose: tool-config
-    reason: Native protocol, SDK and compose acceptance checks owned by the repository.
-    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
-  - paths: [Dockerfile]
-    purpose: package
-    reason: Self-hostable observability pipeline image owned by the repository.
-    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
   modules:
   - .
   - crates/sdk
+  adaptations:
+  - docs/decisions/0001-nds-contract-locations.md
+  extensions:
+    nddev.standards-system:
+      standards:
+      - std-0001
   adapters:
   - claude
   - cursor
