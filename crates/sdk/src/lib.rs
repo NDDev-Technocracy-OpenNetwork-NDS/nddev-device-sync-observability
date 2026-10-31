@@ -1250,7 +1250,7 @@ mod tests {
             let owner = operation_span("accounts", "io").unwrap();
             owner.in_scope(|| {
                 let foreign = tracing::info_span!(target: "foreign_transport", "connect",
-                    module = "rds", op = "PRIVATE_TRANSPORT_DETAIL");
+                    module = "remote", op = "PRIVATE_TRANSPORT_DETAIL");
                 foreign.in_scope(|| {
                     tracing::info!(event.name = "identity.credential.read", outcome = "ok");
                     foreign.record("module", "vault");
