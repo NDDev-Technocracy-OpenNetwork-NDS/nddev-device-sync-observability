@@ -160,12 +160,12 @@ fn caller_classified_failure_survives_authenticated_otlp_without_new_fields() {
     let feed = traces.subscribe().unwrap();
     let (subscriber, _) = subscriber(config, std::io::sink(), traces.tracer()).unwrap();
     tracing::subscriber::with_default(subscriber, || {
-        let failed = operation_span("rds", "io").unwrap();
+        let failed = operation_span("remote", "io").unwrap();
         // Failure is explicit even when there was no warning/error event.
         finish_operation_span(&failed, true);
         drop(failed);
 
-        let handled = operation_span("gds", "io").unwrap();
+        let handled = operation_span("github", "io").unwrap();
         handled.in_scope(|| {
             tracing::event!(target:"nds_acceptance",tracing::Level::WARN, {
                 event.name="module.query.checked",outcome="checked"
