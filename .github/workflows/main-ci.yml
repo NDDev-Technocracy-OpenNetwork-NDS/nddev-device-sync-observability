@@ -18,7 +18,7 @@ env:
 
 jobs:
   contract:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -56,7 +56,7 @@ jobs:
         run: cargo audit --deny warnings
 
   android-targets:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -76,7 +76,7 @@ jobs:
           cargo clippy --locked -p nddev-device-sync-telemetry --all-targets --target x86_64-linux-android -- -D warnings
 
   integration:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
