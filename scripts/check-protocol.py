@@ -14,7 +14,7 @@ SCHEMAS={
     'contracts/v2/observability.schema.json':['contracts/observability.schema.json'],
     'contracts/v2/control-plane.schema.json':['contracts/control-plane.schema.json'],
 }
-FILES=['package.json','package-lock.json','scripts/generate-dtos.mjs','contracts/v1/source-response.schema.json',*SCHEMAS]
+FILES=['package.json','bun.lock','scripts/generate-dtos.mjs','contracts/v1/source-response.schema.json',*SCHEMAS]
 
 def project(path,data):
     target=ROOT/path
@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='nds-observability-codegen-') as tempora
     for name in FILES:
         data=source(name);path=directory/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
         for target in SCHEMAS.get(name,[]):project(target,data)
-    subprocess.run(['npm','ci','--ignore-scripts','--no-audit','--no-fund'],cwd=directory,check=True,timeout=120,stdout=subprocess.DEVNULL)
+    subprocess.run(['bun','install','--frozen-lockfile','--ignore-scripts'],cwd=directory,check=True,timeout=120,stdout=subprocess.DEVNULL)
     for profile,name in [('telemetry','crates/sdk/src/event.rs'),('observability','src/wire.rs'),('source','src/source_wire.rs')]:
         output=directory/name
         output.parent.mkdir(parents=True,exist_ok=True)

@@ -1,10 +1,10 @@
 // Generated; do not edit. AGPL-3.0-only. NDDev OpenNetwork — https://nddev.ai
 // Source: NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-protocol/contracts/v2/observability.schema.json
-// Schema SHA-256: c75f4778536ac505fcf322f4f77b05a9c9e5e4fd9a2f44fbef081161ccacd9ee
-// Generator script SHA-256: 7d4babb41f514c7723ec141ce915844bc6d2b6076e10fb0afcfe5243396fe8d6
-// Tool: quicktype-core 26.0.0; dependency lock SHA-256: 643e0f2ba88602f4acb9546c401d4838e8e106a9180c0e6f3a760985081bfcf6
+// Schema SHA-256: 666b9d05fd0098d43833b5ff3f2c098c6e043574f9ae36c2e6b04b4143ceb34d
+// Generator script SHA-256: ba71ce353a691d59227fbe948f45edf4b0667be7e5a105741f551d3186f6a8b8
+// Tool: quicktype-core 26.0.0; dependency lock SHA-256: ec1d8541bcae0771e2fe0e95e572f60898fd62e6e31fbfbea80451d244aff5b9
 // DTO generation is not schema, authorization or cryptographic validation.
-// Shared schema SHA-256: 22f8a01aa3ff70b3198dcceb72f42e4de2dcc2087fa2db2a9c3864f513e051a9
+// Shared schema SHA-256: 301f0aa51fa5774216690e257c56186c598b207e465f3284bda8f746146b8cf4
 
 use serde::{Deserialize, Serialize};
 
@@ -218,6 +218,14 @@ pub enum SourceState {
     Unsequenced,
 }
 
+/// Authenticated client export policy only; no global counters, sources or incidents.
+/// Company administration does not grant operator privileges.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientTelemetryPolicy {
+    pub export_mode: ExportMode,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservabilityError {
@@ -232,6 +240,12 @@ pub enum Error {
 
     #[serde(rename = "dependency_unavailable")]
     DependencyUnavailable,
+
+    #[serde(rename = "forbidden_scope")]
+    ForbiddenScope,
+
+    #[serde(rename = "global_grant_required")]
+    GlobalGrantRequired,
 
     #[serde(rename = "idempotency_conflict")]
     IdempotencyConflict,
@@ -249,4 +263,200 @@ pub enum Error {
     RevisionConflict,
 
     Unauthorized,
+}
+
+/// Authenticated client collection policy. Debug is finite: it always carries its expiry and
+/// reverts to standard after it. Functional journals and action results never depend on this
+/// policy.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionPolicy {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug_expires_at: Option<String>,
+
+    pub mode: CollectionMode,
+
+    pub revision: i64,
+}
+
+/// One effective collection and export policy for a client. standard collects and exports
+/// the normal diagnostic envelope; debug additionally collects bounded debug records until
+/// debug_expires_at; off collects and exports nothing new and keeps no hidden stream.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectionMode {
+    Debug,
+
+    Off,
+
+    Standard,
+}
+
+/// The window is at most the one-week diagnostic retention; the server derives the caller's
+/// identity and rights from the signed request, never from this body.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosticSearchRequest {
+    pub end: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filters: Option<DiagnosticFilters>,
+
+    pub limit: i32,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub organization_id: Option<String>,
+
+    pub scope: DiagnosticScope,
+
+    pub signal: DiagnosticSignal,
+
+    pub start: String,
+}
+
+/// Exact matches only; values are identifiers, never free text or query syntax.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosticFilters {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_name: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+}
+
+/// member: the caller's own records; organization: one organization the caller administers;
+/// global: every record, only with a current global diagnostic grant.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticScope {
+    Global,
+
+    Member,
+
+    Organization,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticSignal {
+    Logs,
+
+    Metrics,
+
+    Traces,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosticSearchPage {
+    pub records: Vec<DiagnosticRecord>,
+
+    pub took_ms: i32,
+
+    pub truncated: bool,
+}
+
+/// A projection of one stored record onto fixed, redacted fields; raw stored rows are never
+/// returned.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosticRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<f64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_name: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+
+    pub service_name: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+
+    pub signal: DiagnosticSignal,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+
+    pub timestamp: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+}
+
+/// A one-time server challenge for the global diagnostic administrator key, bound to the
+/// requesting session and device.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalDiagnosticChallenge {
+    pub challenge: String,
+
+    pub expires_at: String,
+
+    pub namespace: Namespace,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum Namespace {
+    #[serde(rename = "nds-global-admin@nddev.ai")]
+    NdsGlobalAdminNddevAi,
+}
+
+/// An SSHSIG (OpenSSH PROTOCOL.sshsig) signature in namespace nds-global-admin@nddev.ai over
+/// the exact challenge bytes.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalDiagnosticProof {
+    pub challenge: String,
+
+    pub signature: String,
+}
+
+/// Global diagnostic access for the same session and device until expires_at; never a bearer
+/// token.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalDiagnosticGrant {
+    pub expires_at: String,
+
+    pub key_fingerprint: String,
 }

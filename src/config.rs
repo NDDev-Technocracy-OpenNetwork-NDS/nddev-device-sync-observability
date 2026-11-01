@@ -6,6 +6,10 @@ impl Secret {
     pub fn expose(&self) -> &str {
         &self.0
     }
+    #[cfg(test)]
+    pub(crate) fn for_tests(value: &str) -> Self {
+        Self(value.into())
+    }
 }
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -71,6 +75,54 @@ pub struct Config {
     pub delivery_interval: Duration,
     pub outbox_ttl: Duration,
     pub signal_interval: Duration,
+    pub search: Option<SearchConfig>,
+}
+
+/// Read access to the stored diagnostics (OpenObserve `_search`). Absent when
+/// `NDS_OO_SEARCH_URL` is unset; search then answers `dependency_unavailable`.
+pub struct SearchConfig {
+    pub url: reqwest::Url,
+    pub organization: String,
+    pub logs: String,
+    pub traces: String,
+    pub user: String,
+    pub password: Secret,
+}
+
+fn name(variable: &str, default: &str) -> Result<String, ConfigError> {
+    let value = std::env::var(variable).unwrap_or_else(|_| default.into());
+    crate::search::identifier(&value)
+        .then_some(value)
+        .ok_or(ConfigError)
+}
+
+fn search() -> Result<Option<SearchConfig>, ConfigError> {
+    let Ok(url) = std::env::var("NDS_OO_SEARCH_URL") else {
+        return Ok(None);
+    };
+    let mut url = reqwest::Url::parse(&url).map_err(|_| ConfigError)?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ConfigError);
+    }
+    if !url.path().ends_with('/') {
+        url.set_path(&format!("{}/", url.path()));
+    }
+    Ok(Some(SearchConfig {
+        url,
+        organization: name("NDS_OO_ORG", "default")?,
+        logs: name("NDS_OO_LOGS_STREAM", "nds")?,
+        traces: name("NDS_OO_TRACES_STREAM", "default")?,
+        user: std::env::var("NDS_OO_SEARCH_USER")
+            .ok()
+            .filter(|user| !user.is_empty() && user.len() <= 254 && !user.contains(':'))
+            .ok_or(ConfigError)?,
+        password: secret("NDS_OO_SEARCH_PASSWORD")?,
+    }))
 }
 
 impl Config {
@@ -173,6 +225,7 @@ impl Config {
             )?),
             outbox_ttl: Duration::from_secs(count("NDS_OUTBOX_TTL_SECONDS", 3600, 86400)?),
             signal_interval: Duration::from_secs(count("NDS_SIGNAL_INTERVAL_SECONDS", 5, 60)?),
+            search: search()?,
         })
     }
 }

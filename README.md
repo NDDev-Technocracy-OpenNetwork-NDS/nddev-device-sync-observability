@@ -30,6 +30,22 @@ not the business sync operation log. Incident action receipts also retain one
 hour; timestamped operation IDs and a persisted monotonic observed-time floor
 prevent an expired operation from becoming new again after clock rollback.
 
+Scoped diagnostic search (`POST /v2/observability/search`, admin token) serves
+the signed server only. The server authenticates the caller, decides the scope
+and sends it in `x-nds-scope-kind` (`member`, `organization` or `global`) and
+`x-nds-scope-subject`. The request body can only narrow to that scope, never
+widen it. The service reads OpenObserve with its own search account
+(`NDS_OO_SEARCH_URL`, `NDS_OO_SEARCH_USER`, `NDS_OO_SEARCH_PASSWORD_FILE`;
+streams `NDS_OO_ORG`, `NDS_OO_LOGS_STREAM`, `NDS_OO_TRACES_STREAM`). It
+first reads the stream's stored columns, then runs one SQL statement built only
+from fixed column names and validated identifiers. A condition on a column the
+stream has never stored matches nothing instead of failing. The window is at most
+the seven-day retention. One extra hit reports truncation, and every hit is
+projected onto the fixed `DiagnosticRecord` fields; raw rows never leave. Without
+`NDS_OO_SEARCH_URL`, search answers `dependency_unavailable`. OpenObserve OSS
+enforces no roles (RBAC is Enterprise-only), so the search account is a separate
+credential on the internal network, not a technically read-only one.
+
 Client batches may arrive out of producer order. Unique delayed records remain
 searchable and repeated records use the same fingerprint receipts.
 Retained producer progress and source freshness never move backwards. Newly
