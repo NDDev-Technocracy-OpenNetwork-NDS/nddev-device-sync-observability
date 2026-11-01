@@ -59,7 +59,12 @@ services:
       NDS_SIGNAL_INTERVAL_SECONDS: '2'
       NDS_DELIVERY_INTERVAL_MS: '250'
       NDS_EXPECTED_SOURCES: nddev-device-sync-server,nddev-device-sync-observability
-    secrets: [runtime_url,ingest_token,admin_token,vector_password]
+      # Scoped diagnostic search reads OpenObserve over the internal network only.
+      # OpenObserve OSS enforces no roles; production uses a dedicated search user.
+      NDS_OO_SEARCH_URL: http://openobserve:5080/
+      NDS_OO_SEARCH_USER: ${NDS_OO_USER:?required}
+      NDS_OO_SEARCH_PASSWORD_FILE: /run/secrets/oo_password
+    secrets: [runtime_url,ingest_token,admin_token,vector_password,oo_password]
     networks: [pipeline]
     depends_on:
       migrate: {condition: service_completed_successfully}
