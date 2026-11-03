@@ -48,7 +48,10 @@ static RESOURCE_FIELDS: LazyLock<std::collections::BTreeMap<&'static str, jsonsc
 const COLLECTION_EPOCH: &str = "nds.collection.epoch";
 
 #[derive(Clone)]
-struct CollectionSampler(crate::collection::Collection);
+struct CollectionSampler {
+    collection: crate::collection::Collection,
+    standard: Sampler,
+}
 impl fmt::Debug for CollectionSampler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("ClientCollectionSampler")
@@ -64,11 +67,11 @@ impl ShouldSample for CollectionSampler {
         attributes: &[KeyValue],
         links: &[Link],
     ) -> SamplingResult {
-        let epoch = self.0.current();
+        let epoch = self.collection.current();
         let sampler = if epoch.is_some() {
-            Sampler::ParentBased(Box::new(Sampler::AlwaysOn))
+            &self.standard
         } else {
-            Sampler::AlwaysOff
+            &Sampler::AlwaysOff
         };
         let mut result = sampler.should_sample(parent, trace_id, name, kind, attributes, links);
         if let Some(epoch) = epoch
@@ -150,7 +153,10 @@ impl ClientTraces {
         let collection = crate::collection::Collection::client(router.clone());
         let provider = SdkTracerProvider::builder()
             .with_resource(crate::span::resource(config))
-            .with_sampler(CollectionSampler(collection.clone()))
+            .with_sampler(CollectionSampler {
+                collection: collection.clone(),
+                standard: Sampler::ParentBased(Box::new(Sampler::AlwaysOn)),
+            })
             .with_span_processor(Processor {
                 collection: collection.clone(),
                 router: router.clone(),

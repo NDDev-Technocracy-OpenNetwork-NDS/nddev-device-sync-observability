@@ -34,11 +34,11 @@ impl Collection {
     pub(crate) fn set_enabled(&self, enabled: bool) -> Result<bool, Error> {
         let previous = self
             .epoch
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                 if (epoch & 1 == 1) == enabled {
                     Some(epoch)
                 } else {
-                    epoch.checked_add(1)
+                    epoch.checked_add(1).filter(|epoch| *epoch < u64::MAX)
                 }
             })
             .map_err(|_| Error)?;
