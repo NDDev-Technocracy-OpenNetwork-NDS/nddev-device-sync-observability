@@ -153,6 +153,7 @@ impl view::LocalDiagnostics {
     pub fn unavailable() -> Self {
         Self {
             sink_initialized: false,
+            collection_enabled: None,
             debug_enabled: false,
             debug_scope: None,
             rejected_fields_or_events: None,
@@ -731,6 +732,7 @@ impl<W: Write> Control<W> {
         });
         view::LocalDiagnostics {
             sink_initialized: true,
+            collection_enabled: Some(self.shared.collection.current().is_some()),
             debug_enabled: debug_scope.is_some(),
             debug_scope,
             rejected_fields_or_events: Some(self.rejected_fields_or_events()),
@@ -1407,6 +1409,7 @@ mod tests {
             assert_eq!(spans.health().pending, 1);
             let earlier = operation_span("vault", "io").unwrap();
             control.set_collection_enabled(false).unwrap();
+            assert_eq!(control.diagnostics().collection_enabled, Some(false));
             assert_eq!(events.health().pending, 0);
             assert_eq!(spans.health().pending, 0);
             let before = output.lock().unwrap().len();
@@ -1433,6 +1436,7 @@ mod tests {
             assert!(events.take_batch().is_none());
             assert!(spans.take_batch().is_none());
             control.set_collection_enabled(true).unwrap();
+            assert_eq!(control.diagnostics().collection_enabled, Some(true));
             drop(earlier);
             drop(during);
             delivering.in_scope(|| {
