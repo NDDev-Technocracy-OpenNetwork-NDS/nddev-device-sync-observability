@@ -539,9 +539,6 @@ where
         let _ = self.dispatch.set(dispatch.downgrade());
     }
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: LayerContext<'_, S>) {
-        if self.shared.collection.current().is_none() {
-            return;
-        }
         if let Some(span) = ctx.span(id) {
             let parent = attrs.parent().and_then(|id| ctx.span(id)).or_else(|| {
                 attrs
@@ -563,8 +560,11 @@ where
             // Dependency spans are not NDS producers. Keep only suppression
             // ancestry through them; neither their fields nor rejection counts
             // may relabel or multiply events from an owned nested operation.
-            if attrs.metadata().target() == "nds_telemetry"
-                || self.shared.owns_target(attrs.metadata().target())
+            // Keep only the non-content suppression marker while Off, so
+            // an in-flight delivery cannot feed itself after re-enabling.
+            if self.shared.collection.current().is_some()
+                && (attrs.metadata().target() == "nds_telemetry"
+                    || self.shared.owns_target(attrs.metadata().target()))
             {
                 attrs.record(&mut Visitor {
                     fields: &mut fields,
@@ -1423,6 +1423,7 @@ mod tests {
                     .is_err()
             );
             let during = operation_span("vault", "io").unwrap();
+            let delivering = delivery_span();
             let native = traces
                 .tracer()
                 .start_with_context("module.operation", &Context::new());
@@ -1434,6 +1435,14 @@ mod tests {
             control.set_collection_enabled(true).unwrap();
             drop(earlier);
             drop(during);
+            delivering.in_scope(|| {
+                tracing::info!(event.name = "identity.request_completed", outcome = "ok");
+            });
+            drop(delivering);
+            assert!(
+                events.take_batch().is_none(),
+                "delivery suppression survives Off"
+            );
             assert!(
                 spans.take_batch().is_none(),
                 "old operations cannot acquire the new collection lifetime"
@@ -1458,7 +1467,7 @@ mod tests {
                     .any(|b| b == b"nds.collection")
             );
         });
-        assert_eq!(records(&output).len(), 2);
+        assert_eq!(records(&output).len(), 3);
     }
 
     fn config() -> Config {
