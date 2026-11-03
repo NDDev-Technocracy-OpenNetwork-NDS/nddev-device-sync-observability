@@ -902,6 +902,32 @@
       ],
       "additionalProperties": false,
       "description": "Begin normal email verification for the intended recipient of a live invitation. Invitation possession alone never activates membership or creates a session."
+    },
+    "SessionRenewal": {
+      "type": "object",
+      "description": "One successful device-bound server verification. Retains the original authentication proof; this metadata contains no credential and cannot itself renew authorization.",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/Session"
+        },
+        "verified_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "authorization_id": {
+          "type": "string",
+          "minLength": 43,
+          "maxLength": 43,
+          "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])",
+          "x-sensitive": true,
+          "description": "Canonical unpadded base64url identity for this retained server session, not an authentication token. Rust credential ownership only; never expose in presentation metadata or telemetry."
+        }
+      },
+      "required": [
+        "session",
+        "verified_at",
+        "authorization_id"
+      ],
+      "additionalProperties": false
     }
   }
 }

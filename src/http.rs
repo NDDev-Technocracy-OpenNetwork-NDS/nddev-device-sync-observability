@@ -2,7 +2,7 @@ use crate::{
     application::{ActionCommand, Error, Repository},
     config::Config,
     domain::{self, Action},
-    normalize,
+    normalize, search,
     signals::Signals,
     store::PgRepository,
     wire,
@@ -29,6 +29,7 @@ pub struct App {
     pub repository: PgRepository,
     pub signals: Arc<Signals>,
     requests: Semaphore,
+    search: reqwest::Client,
 }
 impl App {
     pub async fn new(config: Arc<Config>, signals: Arc<Signals>) -> Result<Arc<Self>, Error> {
@@ -38,11 +39,21 @@ impl App {
             config.expected_sources.clone(),
         )
         .await?;
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let search = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(8))
+            .connect_timeout(Duration::from_secs(2))
+            .redirect(reqwest::redirect::Policy::none())
+            .pool_max_idle_per_host(2)
+            .build()
+            .map_err(|_| Error::Unavailable)?;
         Ok(Arc::new(Self {
             config,
             repository,
             signals,
             requests: Semaphore::new(8),
+            search,
         }))
     }
 }
@@ -132,11 +143,48 @@ pub fn router(app: Arc<App>) -> Router {
         )
         .route("/v2/observability/incidents/{id}/silence", post(silence))
         .route("/v2/observability/incidents/{id}/resolve", post(resolve))
+        .route("/v2/observability/search", post(search))
         .layer(DefaultBodyLimit::max(
             100 * (nddev_device_sync_telemetry::MAX_EVENT_BYTES + 1),
         ))
         .with_state(app.clone())
         .layer(middleware::from_fn_with_state(app, boundary))
+}
+/// Scoped diagnostic search. Only the server calls this route (admin token); it states the
+/// scope it authorized in `x-nds-scope-kind` and `x-nds-scope-subject`, and the body can only
+/// narrow to that scope.
+async fn search(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
+    let refuse = |status, error| (status, Json(wire::ObservabilityError { error })).into_response();
+    let Some(config) = app.config.search.as_ref() else {
+        return reject(Error::Unavailable);
+    };
+    if body.len() > 8192 {
+        return reject(Error::Invalid);
+    }
+    let Ok(request) = serde_json::from_slice::<wire::DiagnosticSearchRequest>(&body) else {
+        return reject(Error::Invalid);
+    };
+    let header = |name| {
+        headers
+            .get(name)
+            .and_then(|v: &HeaderValue| v.to_str().ok())
+    };
+    let scope = match search::scope(
+        header("x-nds-scope-kind"),
+        header("x-nds-scope-subject"),
+        &request,
+    ) {
+        Ok(scope) => scope,
+        Err(_) => return refuse(StatusCode::FORBIDDEN, wire::Error::ForbiddenScope),
+    };
+    match search::search(&app.search, config, &scope, &request, Utc::now()).await {
+        Ok(page) => Json(page).into_response(),
+        Err(search::SearchError::Invalid) => reject(Error::Invalid),
+        Err(search::SearchError::Forbidden) => {
+            refuse(StatusCode::FORBIDDEN, wire::Error::ForbiddenScope)
+        }
+        Err(search::SearchError::Unavailable) => reject(Error::Unavailable),
+    }
 }
 async fn ready(State(app): State<Arc<App>>) -> Response {
     match app.repository.ready().await {

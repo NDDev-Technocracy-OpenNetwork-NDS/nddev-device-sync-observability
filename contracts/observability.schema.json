@@ -351,7 +351,9 @@
             "not_found",
             "revision_conflict",
             "idempotency_conflict",
-            "invalid_transition"
+            "invalid_transition",
+            "forbidden_scope",
+            "global_grant_required"
           ]
         }
       },
@@ -359,6 +361,341 @@
         "error"
       ],
       "additionalProperties": false
+    },
+    "ClientTelemetryPolicy": {
+      "type": "object",
+      "properties": {
+        "export_mode": {
+          "$ref": "#/$defs/ExportMode"
+        }
+      },
+      "required": [
+        "export_mode"
+      ],
+      "additionalProperties": false,
+      "description": "Authenticated client export policy only; no global counters, sources or incidents. Company administration does not grant operator privileges."
+    },
+    "CollectionMode": {
+      "title": "CollectionMode",
+      "type": "string",
+      "enum": [
+        "standard",
+        "debug",
+        "off"
+      ],
+      "description": "One effective collection and export policy for a client. standard collects and exports the normal diagnostic envelope; debug additionally collects bounded debug records until debug_expires_at; off collects and exports nothing new and keeps no hidden stream."
+    },
+    "CollectionPolicy": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/CollectionMode"
+        },
+        "debug_expires_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "mode",
+        "revision"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "debug"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "debug_expires_at"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "debug_expires_at"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "Authenticated client collection policy. Debug is finite: it always carries its expiry and reverts to standard after it. Functional journals and action results never depend on this policy."
+    },
+    "DiagnosticScope": {
+      "title": "DiagnosticScope",
+      "type": "string",
+      "enum": [
+        "member",
+        "organization",
+        "global"
+      ],
+      "description": "member: the caller's own records; organization: one organization the caller administers; global: every record, only with a current global diagnostic grant."
+    },
+    "DiagnosticSignal": {
+      "title": "DiagnosticSignal",
+      "type": "string",
+      "enum": [
+        "logs",
+        "traces",
+        "metrics"
+      ]
+    },
+    "DiagnosticFilters": {
+      "title": "DiagnosticFilters",
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "event_name": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "module": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "device_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "trace_id": {
+          "$ref": "#/$defs/Identifier"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Exact matches only; values are identifiers, never free text or query syntax."
+    },
+    "DiagnosticSearchRequest": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/DiagnosticScope"
+        },
+        "organization_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "signal": {
+          "$ref": "#/$defs/DiagnosticSignal"
+        },
+        "start": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "end": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "filters": {
+          "$ref": "#/$defs/DiagnosticFilters"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        }
+      },
+      "required": [
+        "scope",
+        "signal",
+        "start",
+        "end",
+        "limit"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "organization"
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          },
+          "then": {
+            "required": [
+              "organization_id"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "organization_id"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "The window is at most the one-week diagnostic retention; the server derives the caller's identity and rights from the signed request, never from this body."
+    },
+    "DiagnosticRecord": {
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "signal": {
+          "$ref": "#/$defs/DiagnosticSignal"
+        },
+        "service_name": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "event_name": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "module": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "error_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "severity": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "device_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "user_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "trace_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "span_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "duration_ms": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 86400000
+        },
+        "value": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "timestamp",
+        "signal",
+        "service_name"
+      ],
+      "additionalProperties": false,
+      "description": "A projection of one stored record onto fixed, redacted fields; raw stored rows are never returned."
+    },
+    "DiagnosticSearchPage": {
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DiagnosticRecord"
+          },
+          "maxItems": 200
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "took_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        }
+      },
+      "required": [
+        "records",
+        "truncated",
+        "took_ms"
+      ],
+      "additionalProperties": false
+    },
+    "GlobalDiagnosticChallenge": {
+      "type": "object",
+      "properties": {
+        "challenge": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "namespace": {
+          "const": "nds-global-admin@nddev.ai"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "required": [
+        "challenge",
+        "namespace",
+        "expires_at"
+      ],
+      "additionalProperties": false,
+      "description": "A one-time server challenge for the global diagnostic administrator key, bound to the requesting session and device."
+    },
+    "GlobalDiagnosticProof": {
+      "type": "object",
+      "properties": {
+        "challenge": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "signature": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 2048,
+          "pattern": "^-----BEGIN SSH SIGNATURE-----\\n[A-Za-z0-9+/=\\n]+\\n-----END SSH SIGNATURE-----\\n?$"
+        }
+      },
+      "required": [
+        "challenge",
+        "signature"
+      ],
+      "additionalProperties": false,
+      "description": "An SSHSIG (OpenSSH PROTOCOL.sshsig) signature in namespace nds-global-admin@nddev.ai over the exact challenge bytes."
+    },
+    "GlobalDiagnosticGrant": {
+      "type": "object",
+      "properties": {
+        "expires_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "key_fingerprint": {
+          "type": "string",
+          "pattern": "^SHA256:[A-Za-z0-9+/]{43}$"
+        }
+      },
+      "required": [
+        "expires_at",
+        "key_fingerprint"
+      ],
+      "additionalProperties": false,
+      "description": "Global diagnostic access for the same session and device until expires_at; never a bearer token."
     }
   }
 }

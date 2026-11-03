@@ -5,6 +5,7 @@ pub use nddev_device_sync_telemetry::event as event_wire;
 pub mod http;
 pub mod normalize;
 pub mod runtime;
+pub mod search;
 pub mod signals;
 pub mod source_wire;
 pub mod store;

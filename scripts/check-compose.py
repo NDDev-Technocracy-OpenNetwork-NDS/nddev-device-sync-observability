@@ -217,6 +217,31 @@ def main():
             collector_logs=eventually(lambda:search('nds','logs',"service_name='nddev-device-sync-observability' AND event_name='server.started'"))
             assert any(row.get('source_commit',row.get('source.commit'))==obs_source for row in collector_logs)
             print('Searchable source identities verified: collector '+obs_source+'; server '+SERVER_SOURCE)
+            # Scoped diagnostic search (P2): the server decides the scope in fixed headers and
+            # the body can only narrow to it; hits come back as fixed redacted records.
+            def scoped(kind,subject,body):
+                headers={'x-nds-scope-kind':kind}
+                if subject:headers['x-nds-scope-subject']=subject
+                return request(obs+'/v2/observability/search',body,token=values['admin_token'],headers=headers)
+            stamp=lambda seconds:time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(seconds))
+            window={'start':stamp(time.time()-3600),'end':stamp(time.time()+30),'limit':10}
+            def global_page(signal):
+                code,body=scoped('global',None,{'scope':'global','signal':signal,'filters':{'trace_id':trace},**window})
+                assert code==200,f'global {signal} search status {code}'
+                return json.loads(body)['records']
+            found=eventually(lambda:global_page('logs'))
+            assert any(record['trace_id']==trace and record['service_name']=='nddev-device-sync-server' for record in found)
+            assert all(set(record)<= {'timestamp','signal','service_name','event_name','module','outcome','error_type','severity','operation_id','device_id','user_id','tenant_id','trace_id','span_id','name','duration_ms','value'} for record in found)
+            assert eventually(lambda:global_page('traces'))
+            code,body=scoped('member','nds-absent-user',{'scope':'member','signal':'logs','filters':{'trace_id':trace},**window})
+            assert code==200 and json.loads(body)['records']==[],'a member never sees records of another identity'
+            code,_=scoped('member','nds-absent-user',{'scope':'global','signal':'logs',**window})
+            assert code==403,'a body cannot widen the scope the server decided'
+            code,_=request(obs+'/v2/observability/search',{'scope':'global','signal':'logs',**window},token=values['admin_token'])
+            assert code==403,'a search without a server scope is refused'
+            code,_=request(obs+'/v2/observability/search',{'scope':'global','signal':'logs',**window},token=values['ingest_token'],headers={'x-nds-scope-kind':'global'})
+            assert code==401,'the ingest token cannot search'
+            print('Scoped diagnostic search verified: global logs and traces found; member isolation, scope widening and token misuse refused')
             def streams(kind):
                 code,body=request(oo+'/api/default/streams?type='+kind,headers=oo_headers)
                 assert code==200
