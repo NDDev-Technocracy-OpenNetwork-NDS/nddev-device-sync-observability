@@ -131,17 +131,25 @@ impl ExportBatch {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.failures = state.failures.saturating_add(1).min(MAX_COUNTER);
     }
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn expires_at_ms(&self) -> Result<u64, Error> {
+    /// Original remaining eligibility, projected to Unix milliseconds for durable storage.
+    /// Reading this value does not settle the batch or renew its retention.
+    #[cfg(any(target_arch = "wasm32", feature = "native-spool"))]
+    pub fn expires_at_ms(&self) -> Result<u64, Error> {
         let remaining = RETENTION.checked_sub(self.created.elapsed()).ok_or(Error)?;
         u64::try_from(chrono::Utc::now().timestamp_millis())
             .map_err(|_| Error)?
             .checked_add(remaining.as_millis() as u64)
             .ok_or(Error)
     }
-    /// Ownership moved to committed browser storage; this is not delivery.
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn persisted(mut self) {
+    /// Transfer ownership to the caller's committed durable storage, without
+    /// counting delivery or loss. Call only after the exact bytes, count and
+    /// expiry are durably committed; the storage owner then accounts for them.
+    /// An already acknowledged batch cannot settle another in-flight batch.
+    #[cfg(any(target_arch = "wasm32", feature = "native-spool"))]
+    pub fn persisted(mut self) {
+        if self.settled {
+            return;
+        }
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.inflight -= self.count;
         self.settled = true;
@@ -471,6 +479,89 @@ mod tests {
         assert_eq!(consumer.count(), 1);
         assert!(ready.as_mut().poll(&mut context).is_ready());
         assert_eq!(feed.take_batch().unwrap().bytes(), &[2]);
+    }
+    #[cfg(feature = "native-spool")]
+    #[test]
+    fn persistence_drains_all_batches_without_claiming_remote_delivery() {
+        let router = Router::default();
+        let feed = router.subscribe().unwrap();
+        for _ in 0..128 {
+            event(&router);
+        }
+        let mut sequences = Vec::new();
+        while let Some(batch) = feed.take_batch() {
+            assert!(batch.count() <= 32);
+            for line in batch.bytes().split(|byte| *byte == b'\n') {
+                if !line.is_empty() {
+                    let event: serde_json::Value = serde_json::from_slice(line).unwrap();
+                    sequences.push(event["producer.sequence"].as_u64().unwrap());
+                }
+            }
+            batch.persisted();
+        }
+        assert_eq!(sequences, (1..=128).collect::<Vec<_>>());
+        let health = feed.health();
+        assert_eq!(
+            (health.pending, health.delivered, health.dropped),
+            (0, 0, 0)
+        );
+        event(&router);
+        drop(feed.take_batch().unwrap());
+        assert_eq!(feed.health().dropped, 1);
+    }
+    #[cfg(feature = "native-spool")]
+    #[test]
+    fn persisted_receipt_cannot_settle_a_later_inflight_batch() {
+        let router = Router::default();
+        let feed = router.subscribe().unwrap();
+        event(&router);
+        let mut first = feed.take_batch().unwrap();
+        first.acknowledge_count(1).unwrap();
+        event(&router);
+        let next = feed.take_batch().unwrap();
+        first.persisted();
+        assert_eq!(feed.health().pending, 1);
+        next.persisted();
+        let health = feed.health();
+        assert_eq!(
+            (health.pending, health.delivered, health.dropped),
+            (0, 1, 0)
+        );
+    }
+    #[cfg(feature = "native-spool")]
+    #[test]
+    fn durable_expiry_retains_elapsed_age_and_rejects_expired_batches() {
+        let router = Router::default();
+        let feed = router.subscribe().unwrap();
+        event(&router);
+        let mut batch = feed.take_batch().unwrap();
+        batch.created -= Duration::from_secs(300);
+        let before = chrono::Utc::now().timestamp_millis() as u64;
+        let expiry = batch.expires_at_ms().unwrap();
+        let after = chrono::Utc::now().timestamp_millis() as u64;
+        assert!((before + 1_499_000..=after + 1_500_000).contains(&expiry));
+        batch.created -= RETENTION;
+        assert!(batch.expires_at_ms().is_err());
+        drop(batch);
+        assert_eq!(feed.health().dropped, 1);
+    }
+    #[cfg(feature = "native-spool")]
+    #[test]
+    fn persistence_wakes_the_single_waiting_drainer_outside_the_state_lock() {
+        let router = Router::default();
+        let feed = router.subscribe().unwrap();
+        event(&router);
+        let first = feed.take_batch().unwrap();
+        event(&router);
+        let consumer = Consumer::new(&feed);
+        let waker = Waker::from(consumer.clone());
+        let mut context = Context::from_waker(&waker);
+        let mut ready = Box::pin(feed.ready());
+        assert!(ready.as_mut().poll(&mut context).is_pending());
+        first.persisted();
+        assert_eq!(consumer.count(), 1);
+        assert!(ready.as_mut().poll(&mut context).is_ready());
+        feed.take_batch().unwrap().persisted();
     }
     #[test]
     fn accepted_count_settles_owned_native_batch_once_without_changing_bytes() {
