@@ -1,7 +1,10 @@
 //! Real native spans for the authenticated client transport. The SDK owns the
 //! projection and bounded queue; accounts owns signing, retries and cancellation.
 use crate::{Config, Error, ExportFeed, feed::Router};
-use opentelemetry::{Context, trace::TracerProvider as _};
+use opentelemetry::{
+    Context, KeyValue,
+    trace::{Link, SpanKind, TraceId, TracerProvider as _},
+};
 use opentelemetry_proto::{
     tonic::{collector::trace::v1::ExportTraceServiceRequest, trace::v1::ResourceSpans},
     transform::common::tonic::ResourceAttributesWithSchema,
@@ -9,7 +12,10 @@ use opentelemetry_proto::{
 use opentelemetry_sdk::{
     Resource,
     error::OTelSdkResult,
-    trace::{SdkTracerProvider, Span, SpanData, SpanProcessor, Tracer},
+    trace::{
+        Sampler, SamplingDecision, SamplingResult, SdkTracerProvider, ShouldSample, Span, SpanData,
+        SpanProcessor, Tracer,
+    },
 };
 use prost::Message;
 use std::{
@@ -39,7 +45,45 @@ static RESOURCE_FIELDS: LazyLock<std::collections::BTreeMap<&'static str, jsonsc
         .collect()
     });
 
+const COLLECTION_EPOCH: &str = "nds.collection.epoch";
+
+#[derive(Clone)]
+struct CollectionSampler(crate::collection::Collection);
+impl fmt::Debug for CollectionSampler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ClientCollectionSampler")
+    }
+}
+impl ShouldSample for CollectionSampler {
+    fn should_sample(
+        &self,
+        parent: Option<&Context>,
+        trace_id: TraceId,
+        name: &str,
+        kind: &SpanKind,
+        attributes: &[KeyValue],
+        links: &[Link],
+    ) -> SamplingResult {
+        let epoch = self.0.current();
+        let sampler = if epoch.is_some() {
+            Sampler::ParentBased(Box::new(Sampler::AlwaysOn))
+        } else {
+            Sampler::AlwaysOff
+        };
+        let mut result = sampler.should_sample(parent, trace_id, name, kind, attributes, links);
+        if let Some(epoch) = epoch
+            && result.decision == SamplingDecision::RecordAndSample
+        {
+            result
+                .attributes
+                .push(KeyValue::new(COLLECTION_EPOCH, epoch.to_string()));
+        }
+        result
+    }
+}
+
 struct Processor {
+    collection: crate::collection::Collection,
     router: Arc<Router>,
     resource: Mutex<ResourceAttributesWithSchema>,
 }
@@ -51,6 +95,19 @@ impl fmt::Debug for Processor {
 impl SpanProcessor for Processor {
     fn on_start(&self, _: &mut Span, _: &Context) {}
     fn on_end(&self, mut span: SpanData) {
+        let epoch = span
+            .attributes
+            .iter()
+            .find(|field| field.key.as_str() == COLLECTION_EPOCH)
+            .and_then(|field| match &field.value {
+                opentelemetry::Value::String(value) => value.as_str().parse::<u64>().ok(),
+                _ => None,
+            });
+        let Some(epoch) = epoch.filter(|epoch| self.collection.current() == Some(*epoch)) else {
+            return;
+        };
+        span.attributes
+            .retain(|field| field.key.as_str() != COLLECTION_EPOCH);
         if !crate::span::project(&mut span) {
             return;
         }
@@ -63,7 +120,9 @@ impl SpanProcessor for Processor {
         };
         // OTLP's top-level field is repeated ResourceSpans; concatenating its
         // encoded records produces one valid protobuf request without JSON spans.
-        self.router.enqueue_span(request.encode_to_vec());
+        self.router.enqueue_span(request.encode_to_vec(), || {
+            self.collection.current() == Some(epoch)
+        });
     }
     fn force_flush(&self) -> OTelSdkResult {
         Ok(())
@@ -79,6 +138,7 @@ impl SpanProcessor for Processor {
     }
 }
 pub struct ClientTraces {
+    pub(crate) collection: crate::collection::Collection,
     provider: SdkTracerProvider,
     router: Arc<Router>,
 }
@@ -87,9 +147,12 @@ impl ClientTraces {
         crate::Policy::new(config)?;
         let router = Arc::new(Router::default());
         router.buffer_startup()?;
+        let collection = crate::collection::Collection::client(router.clone());
         let provider = SdkTracerProvider::builder()
             .with_resource(crate::span::resource(config))
+            .with_sampler(CollectionSampler(collection.clone()))
             .with_span_processor(Processor {
+                collection: collection.clone(),
                 router: router.clone(),
                 resource: Mutex::default(),
             })
@@ -97,7 +160,11 @@ impl ClientTraces {
             .with_max_events_per_span(0)
             .with_max_links_per_span(0)
             .build();
-        Ok(Self { provider, router })
+        Ok(Self {
+            collection,
+            provider,
+            router,
+        })
     }
     pub fn tracer(&self) -> Tracer {
         self.provider.tracer("nds-telemetry")

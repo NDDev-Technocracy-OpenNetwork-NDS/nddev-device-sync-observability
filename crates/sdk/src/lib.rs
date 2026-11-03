@@ -37,6 +37,7 @@ use tracing_subscriber::{
 mod browser_queue_policy;
 #[cfg(feature = "client-traces")]
 pub mod client_traces;
+mod collection;
 mod feed;
 #[cfg(any(feature = "otlp", feature = "client-traces"))]
 mod span;
@@ -340,6 +341,7 @@ struct ActiveDebug {
 }
 struct Shared<W> {
     feed: feed::Router,
+    collection: collection::Collection,
     policy: Policy,
     sink: Mutex<Sink<W>>,
     rejected: AtomicU64,
@@ -386,12 +388,23 @@ impl<W: Write> Shared<W> {
         self.emit_export(fields, severity, true);
     }
     fn emit_export(&self, fields: Map<String, Value>, severity: &str, export: bool) {
+        let Some(epoch) = self.collection.current() else {
+            return;
+        };
+        self.emit_export_at(fields, severity, export, epoch);
+    }
+    fn emit_export_at(&self, fields: Map<String, Value>, severity: &str, export: bool, epoch: u64) {
+        if self.collection.current() != Some(epoch) {
+            return;
+        }
         let fields = self.prepare(fields, severity);
         let Ok(mut sink) = self.sink.lock() else {
             self.write_failures.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        self.write(&mut sink, fields, export);
+        if self.collection.current() == Some(epoch) {
+            self.write(&mut sink, fields, export);
+        }
     }
     fn write(&self, sink: &mut Sink<W>, mut fields: Map<String, Value>, export: bool) {
         if sink.sequence < MAX_COUNTER {
@@ -526,6 +539,9 @@ where
         let _ = self.dispatch.set(dispatch.downgrade());
     }
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: LayerContext<'_, S>) {
+        if self.shared.collection.current().is_none() {
+            return;
+        }
         if let Some(span) = ctx.span(id) {
             let parent = attrs.parent().and_then(|id| ctx.span(id)).or_else(|| {
                 attrs
@@ -561,6 +577,9 @@ where
         }
     }
     fn on_record(&self, id: &Id, record: &Record<'_>, ctx: LayerContext<'_, S>) {
+        if self.shared.collection.current().is_none() {
+            return;
+        }
         if let Some(span) = ctx.span(id)
             && (span.metadata().target() == "nds_telemetry"
                 || self.shared.owns_target(span.metadata().target()))
@@ -574,6 +593,9 @@ where
         }
     }
     fn on_event(&self, event: &Event<'_>, ctx: LayerContext<'_, S>) {
+        let Some(epoch) = self.shared.collection.current() else {
+            return;
+        };
         let metadata = event.metadata();
         if !self.shared.owns_target(metadata.target()) {
             return;
@@ -631,10 +653,11 @@ where
         }
         self.shared
             .reject_fields(fields.rejected, !fields.export_suppressed);
-        self.shared.emit_export(
+        self.shared.emit_export_at(
             fields.values,
             &metadata.level().as_str().to_ascii_lowercase(),
             !fields.export_suppressed,
+            epoch,
         );
         self.shared.debug_tick();
     }
@@ -654,6 +677,28 @@ impl<W: Write> Clone for Control<W> {
     }
 }
 impl<W: Write> Control<W> {
+    /// Stop local event collection and discard unsent client event/span feeds.
+    /// Use install_client_with_traces_to to bind the native trace provider to
+    /// this same lifetime. An independently supplied tracer retains its owner.
+    /// Export-only opt-out keeps its original ExportFeed semantics.
+    pub fn set_collection_enabled(&self, enabled: bool) -> Result<(), Error> {
+        if self.output_health().terminating {
+            return Err(Error);
+        }
+        {
+            // Serialize the transition with local writes. A producer from an
+            // earlier epoch cannot publish after Off or a subsequent re-enable.
+            let _sink = self.shared.sink.lock().map_err(|_| Error)?;
+            if self.shared.collection.set_enabled(enabled)? {
+                self.shared.feed.set_enabled(enabled);
+            }
+        }
+        if !enabled {
+            // Do not emit an end notice after collection has stopped.
+            self.shared.debug.lock().map_err(|_| Error)?.take();
+        }
+        Ok(())
+    }
     pub fn subscribe(&self) -> Result<ExportFeed, Error> {
         self.shared.feed.subscribe()
     }
@@ -754,6 +799,9 @@ impl<W: Write> Control<W> {
             debug.validate()?;
         }
         let mut active = self.shared.debug.lock().map_err(|_| Error)?;
+        if window.is_some() && self.shared.collection.current().is_none() {
+            return Err(Error);
+        }
         if let Some(previous) = active.take() {
             self.shared.debug_notice(&previous.window, Some("operator"));
         }
@@ -775,13 +823,20 @@ pub fn subscriber<W: Write + Send + Sync + 'static>(
     writer: W,
     tracer: Tracer,
 ) -> Result<(impl Subscriber + Send + Sync, Control<W>), Error> {
-    subscriber_configured(config, writer, tracer, false)
+    subscriber_configured(
+        config,
+        writer,
+        tracer,
+        false,
+        collection::Collection::default(),
+    )
 }
 fn subscriber_configured<W: Write + Send + Sync + 'static>(
     config: Config,
     writer: W,
     tracer: Tracer,
     buffer_startup: bool,
+    collection: collection::Collection,
 ) -> Result<(impl Subscriber + Send + Sync, Control<W>), Error> {
     let policy = Policy::new(&config)?;
     let feed = feed::Router::default();
@@ -790,6 +845,7 @@ fn subscriber_configured<W: Write + Send + Sync + 'static>(
     }
     let shared = Arc::new(Shared {
         feed,
+        collection,
         policy,
         sink: Mutex::new(Sink {
             writer,
@@ -898,7 +954,13 @@ pub fn install_with_tracer_to(
     tracer: Tracer,
     output: LocalOutput,
 ) -> Result<Logger, Error> {
-    install_configured(config, tracer, output, false)
+    install_configured(
+        config,
+        tracer,
+        output,
+        false,
+        collection::Collection::default(),
+    )
 }
 /// A bounded startup feed awaits the first authenticated client subscription.
 /// Pre-authentication capture is RAM-only until a verified scope claims it.
@@ -908,13 +970,37 @@ pub fn install_client_with_tracer_to(
     tracer: Tracer,
     output: LocalOutput,
 ) -> Result<Logger, Error> {
-    install_configured(config, tracer, output, true)
+    install_configured(
+        config,
+        tracer,
+        output,
+        true,
+        collection::Collection::default(),
+    )
+}
+/// Bind local events and real client spans to one explicit collection lifetime.
+/// The authenticated policy owner applies Off through the returned control;
+/// neither a manual debug window nor transport opt-in bypasses that lifetime.
+#[cfg(feature = "client-traces")]
+pub fn install_client_with_traces_to(
+    config: Config,
+    traces: &client_traces::ClientTraces,
+    output: LocalOutput,
+) -> Result<Logger, Error> {
+    install_configured(
+        config,
+        traces.tracer(),
+        output,
+        true,
+        traces.collection.clone(),
+    )
 }
 fn install_configured(
     config: Config,
     tracer: Tracer,
     output: LocalOutput,
     buffer_startup: bool,
+    collection: collection::Collection,
 ) -> Result<Logger, Error> {
     static INSTALLED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     INSTALLED.set(()).map_err(|_| Error)?;
@@ -924,7 +1010,8 @@ fn install_configured(
     std::panic::set_hook(Box::new(|_| {}));
     let (writer, worker) = output::start(output).map_err(|_| Error)?;
     let output = writer.state.clone();
-    let (subscriber, mut control) = subscriber_configured(config, writer, tracer, buffer_startup)?;
+    let (subscriber, mut control) =
+        subscriber_configured(config, writer, tracer, buffer_startup, collection)?;
     control.output = Some(output.clone());
     tracing::subscriber::set_global_default(subscriber).map_err(|_| Error)?;
     let panic_control = control.clone();
@@ -1016,6 +1103,10 @@ pub fn operation_span(module: &str, scope: &str) -> Result<tracing::Span, Error>
     if suppressed {
         span.set_attribute("nds.export.suppressed", true);
     }
+    // Freeze admission at operation creation, before the actual future can
+    // cross an Off/re-enable transition. The bridge otherwise builds a span
+    // lazily at close and could label an older operation with the new epoch.
+    let _context = trace_context(&span);
     Ok(span)
 }
 /// Finish an operation using the caller's classification of its terminal result.
@@ -1281,6 +1372,93 @@ mod tests {
                 .unwrap()
                 .contains("PRIVATE_TRANSPORT")
         );
+    }
+
+    #[cfg(feature = "client-traces")]
+    #[test]
+    fn collection_off_stops_local_events_and_real_spans_without_replay() {
+        use opentelemetry::trace::{Span as _, Tracer as _};
+        struct MustNotFormat;
+        impl std::fmt::Debug for MustNotFormat {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("Off must not inspect even a permitted field");
+            }
+        }
+        let mut config = config();
+        config.service = "nddev-device-sync-client".into();
+        config.repository = "NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-desktop".into();
+        let traces = client_traces::ClientTraces::new(&config).unwrap();
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let (subscriber, control) = subscriber_configured(
+            config,
+            Capture(output.clone()),
+            traces.tracer(),
+            true,
+            traces.collection.clone(),
+        )
+        .unwrap();
+        let events = control.subscribe().unwrap();
+        let spans = traces.subscribe().unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            operation_span("vault", "io").unwrap().in_scope(|| {
+                tracing::info!(event.name = "client.before_off", outcome = "ok");
+            });
+            assert_eq!(events.health().pending, 1);
+            assert_eq!(spans.health().pending, 1);
+            let earlier = operation_span("vault", "io").unwrap();
+            control.set_collection_enabled(false).unwrap();
+            assert_eq!(events.health().pending, 0);
+            assert_eq!(spans.health().pending, 0);
+            let before = output.lock().unwrap().len();
+            tracing::info!(event.name = "client.while_off", outcome = ?MustNotFormat);
+            control.report_client_lifecycle(view::ClientLifecycle::Ready);
+            control.report_failure(view::FailureKind::NativeBridge);
+            assert!(
+                control
+                    .set_debug(Some(DebugWindow {
+                        scope: "io".into(),
+                        duration: Duration::from_secs(1),
+                        events: 1,
+                    }))
+                    .is_err()
+            );
+            let during = operation_span("vault", "io").unwrap();
+            let native = traces
+                .tracer()
+                .start_with_context("module.operation", &Context::new());
+            assert!(!native.is_recording());
+            drop(native);
+            assert_eq!(output.lock().unwrap().len(), before);
+            assert!(events.take_batch().is_none());
+            assert!(spans.take_batch().is_none());
+            control.set_collection_enabled(true).unwrap();
+            drop(earlier);
+            drop(during);
+            assert!(
+                spans.take_batch().is_none(),
+                "old operations cannot acquire the new collection lifetime"
+            );
+            operation_span("vault", "io").unwrap().in_scope(|| {
+                tracing::info!(event.name = "client.after_off", outcome = "ok");
+            });
+            let batch = events.take_batch().unwrap();
+            assert_eq!(batch.count(), 1);
+            assert!(
+                !batch
+                    .bytes()
+                    .windows(b"while_off".len())
+                    .any(|b| b == b"while_off")
+            );
+            let batch = spans.take_batch().unwrap();
+            assert_eq!(batch.count(), 1);
+            assert!(
+                !batch
+                    .bytes()
+                    .windows(b"nds.collection".len())
+                    .any(|b| b == b"nds.collection")
+            );
+        });
+        assert_eq!(records(&output).len(), 2);
     }
 
     fn config() -> Config {
