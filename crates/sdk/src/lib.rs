@@ -686,17 +686,17 @@ impl<W: Write> Control<W> {
         if self.output_health().terminating {
             return Err(Error);
         }
-        {
-            // Serialize the transition with local writes. A producer from an
-            // earlier epoch cannot publish after Off or a subsequent re-enable.
-            let _sink = self.shared.sink.lock().map_err(|_| Error)?;
-            if self.shared.collection.set_enabled(enabled)? {
-                self.shared.feed.set_enabled(enabled);
-            }
+        // Debug notices already take debug before the sink. Keep that order
+        // and serialize the entire mode change, including removal of the old
+        // window, so a delayed Off cannot close a newer manual window.
+        let mut debug = self.shared.debug.lock().map_err(|_| Error)?;
+        let _sink = self.shared.sink.lock().map_err(|_| Error)?;
+        if self.shared.collection.set_enabled(enabled)? {
+            self.shared.feed.set_enabled(enabled);
         }
         if !enabled {
             // Do not emit an end notice after collection has stopped.
-            self.shared.debug.lock().map_err(|_| Error)?.take();
+            debug.take();
         }
         Ok(())
     }
