@@ -198,6 +198,22 @@ struct Route {
 #[derive(Default)]
 pub(crate) struct Router(Mutex<Route>);
 impl Router {
+    pub(crate) fn set_enabled(&self, enabled: bool) {
+        let state = self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .active
+            .upgrade();
+        if let Some(state) = state {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            state.enabled = enabled;
+            if !enabled {
+                state.clear();
+            }
+            wake_ready(state);
+        }
+    }
     /// Only client compositions opt in. Claim startup once; events between
     /// later owners are never carried into the replacement subscription.
     pub fn buffer_startup(&self) -> Result<(), Error> {
@@ -225,10 +241,10 @@ impl Router {
         Ok(ExportFeed(state))
     }
     #[cfg(feature = "client-traces")]
-    pub fn enqueue_span(&self, bytes: Vec<u8>) {
+    pub fn enqueue_span(&self, bytes: Vec<u8>, eligible: impl FnOnce() -> bool) {
         if let Some(queue) = self.0.lock().ok().and_then(|slot| slot.active.upgrade()) {
             let mut queue = queue.lock().unwrap_or_else(|error| error.into_inner());
-            if queue.enabled && !queue.closed {
+            if queue.enabled && !queue.closed && eligible() {
                 queue.push(bytes);
                 wake_ready(queue);
             }
@@ -462,7 +478,7 @@ mod tests {
     fn trace_arrival_before_and_after_registration_are_both_ready() {
         let router = Router::default();
         let feed = router.subscribe().unwrap();
-        router.enqueue_span(vec![1]);
+        router.enqueue_span(vec![1], || true);
         let consumer = Consumer::new(&feed);
         let waker = Waker::from(consumer.clone());
         let mut context = Context::from_waker(&waker);
@@ -475,7 +491,7 @@ mod tests {
         feed.take_batch().unwrap().acknowledge();
         let mut ready = Box::pin(feed.ready());
         assert!(ready.as_mut().poll(&mut context).is_pending());
-        router.enqueue_span(vec![2]);
+        router.enqueue_span(vec![2], || true);
         assert_eq!(consumer.count(), 1);
         assert!(ready.as_mut().poll(&mut context).is_ready());
         assert_eq!(feed.take_batch().unwrap().bytes(), &[2]);

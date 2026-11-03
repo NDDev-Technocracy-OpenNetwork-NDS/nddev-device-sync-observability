@@ -94,6 +94,8 @@ impl ClientLifecycle {
 )]
 pub struct LocalDiagnostics {
     pub sink_initialized: bool,
+    /// Actual local collection state; None means the SDK is unavailable.
+    pub collection_enabled: Option<bool>,
     pub debug_enabled: bool,
     pub debug_scope: Option<DebugScope>,
     pub rejected_fields_or_events: Option<u64>,
