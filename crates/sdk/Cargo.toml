@@ -8,6 +8,7 @@ license = "AGPL-3.0-only"
 [features]
 default = []
 browser-bindings = ["dep:tsify"]
+native-spool = []
 client-traces = ["dep:prost", "dep:opentelemetry-proto"]
 otlp = ["dep:opentelemetry-otlp", "dep:url", "dep:reqwest", "dep:rustls"]
 
