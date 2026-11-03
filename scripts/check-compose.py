@@ -144,6 +144,7 @@ def main():
             'server':{'image':SERVER_IMAGE,'command':['serve'],'read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],'mem_limit':'512m','pids_limit':64,'environment':{'DATABASE_URL_FILE':'/run/secrets/server_runtime_url','NDS_SERVER_ADDR':'0.0.0.0:8080','NDS_MAX_REQUESTS':'1','NDS_MAX_CONNECTIONS':'4'},'secrets':['server_runtime_url'],'networks':['pipeline'],'depends_on':{'server-migrate':{'condition':'service_completed_successfully'}},'logging':{'driver':'fluentd','options':{'fluentd-address':'127.0.0.1:'+env['NDS_FLUENT_PORT'],'fluentd-async':'true','fluentd-buffer-limit':'256','fluentd-max-retries':'3','fluentd-retry-wait':'1s','fluentd-write-timeout':'2s','fluentd-async-reconnect-interval':'1s','mode':'non-blocking','max-buffer-size':'1m','cache-max-size':'2m','cache-max-file':'2'}}},
         },'secrets':{'server_migration_url':{'file':str(private/'server_migration_url')},'server_runtime_url':{'file':str(private/'server_runtime_url')}}}
         if args.fixture_receipt is not None:
+            override['services']['observability']['environment']['NDS_TELEMETRY_ENABLED']='true'
             fixture_ports={name:free_port() for name in ['observability','vector','openobserve']}
             for name,port in [('observability',8080),('vector',4318),('openobserve',5080)]:
                 override['services'].setdefault(name,{})['ports']=[f'127.0.0.1:{fixture_ports[name]}:{port}']
@@ -186,13 +187,37 @@ def main():
                 gateway.write_text(json.dumps({'origin':f"http://127.0.0.1:{fixture_ports['observability']}", 'trace_origin':f"http://127.0.0.1:{fixture_ports['vector']}", 'ingest_token_file':str(directory/'ingest_token-host'), 'admin_token_file':str(directory/'admin_token-host')}));gateway.chmod(0o600)
                 query=directory/'query.json';query.write_text(json.dumps({'origin':f"http://127.0.0.1:{fixture_ports['openobserve']}",'user':values['oo_user'],'password':values['oo_password']}));query.chmod(0o600)
                 receipt=args.fixture_receipt;stop=receipt.with_suffix('.stop')
-                state={'status':'running','gateway_config':str(gateway),'query_config':str(query),'project':project,'stop_marker':str(stop),'expires_at_unix':int(time.time())+args.fixture_seconds,'sources':{'observability':obs_source,'server':SERVER_SOURCE}}
+                # This fresh fixture owns the only target of these requests.
+                # Operator policy reaches clients through the real collector
+                # status and signed server gateway, without response mocks.
+                control=receipt.with_suffix('.export-control.json')
+                with control.open('x') as handle: json.dump({'export_enabled':True},handle)
+                control.chmod(0o600)
+                state={'status':'running','gateway_config':str(gateway),'query_config':str(query),'project':project,'stop_marker':str(stop),'export_control_file':str(control),'export_enabled':True,'expires_at_unix':int(time.time())+args.fixture_seconds,'sources':{'observability':obs_source,'server':SERVER_SOURCE}}
                 with receipt.open('x') as handle: json.dump(state,handle)
                 receipt.chmod(0o600)
                 print('Isolated observability fixture ready; private receipt written outside source.',flush=True)
                 deadline=time.monotonic()+args.fixture_seconds
                 try:
                     while time.monotonic()<deadline and not stop.exists():
+                        assert not control.is_symlink() and control.is_file()
+                        with control.open('rb') as handle: raw=handle.read(1025)
+                        assert len(raw)<=1024
+                        desired=json.loads(raw)
+                        assert type(desired) is dict and set(desired)=={'export_enabled'} and type(desired['export_enabled']) is bool
+                        enabled=desired['export_enabled']
+                        if enabled!=state['export_enabled']:
+                            override['services']['observability']['environment']['NDS_TELEMETRY_ENABLED']='true' if enabled else 'false'
+                            override_path.write_text(json.dumps(override))
+                            compose('up','--detach','--no-deps','--force-recreate','observability',timeout=60)
+                            eventually(lambda:request(obs+'/v1/ready')[0]==200)
+                            def applied():
+                                code,body=request(obs+'/v2/observability/status',token=values['admin_token'])
+                                return code==200 and json.loads(body)['export_mode']==('enabled' if enabled else 'disabled')
+                            eventually(applied)
+                            state['export_enabled']=enabled
+                            pending=receipt.with_suffix('.pending.json');pending.write_text(json.dumps(state));pending.chmod(0o600);pending.replace(receipt)
+                            print('Owned collector export policy applied: '+('enabled' if enabled else 'disabled'),flush=True)
                         if request(obs+'/v1/ready')[0]!=200: raise AssertionError('owned collector became unavailable')
                         time.sleep(1)
                 finally:
