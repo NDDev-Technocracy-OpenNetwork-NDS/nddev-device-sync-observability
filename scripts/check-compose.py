@@ -177,7 +177,7 @@ def main():
             completed=[event for event in migration_events if event.get('event.name')=='migration.completed']
             assert len(completed)==1, 'one actual migration completion required'
             assert completed[0]['migration.version']==int(sql('postgres',"SELECT value FROM nds_observability_meta WHERE key='schema'")), 'migration telemetry must identify the actual schema'
-            assert completed[0]['standards.release']==tomllib.loads((ROOT/'standarts.lock').read_text())['source_release'], 'telemetry standards must match the consumed lock'
+            assert completed[0]['standards.release']==tomllib.loads((ROOT/'contracts.lock').read_text())['source_release'], 'telemetry standards must match the consumed lock'
             assert completed[0]['source.commit']==obs_source, 'migration telemetry must identify the actual collector source'
             if args.fixture_receipt is not None:
                 # These are generated fixture credentials, never operator files.

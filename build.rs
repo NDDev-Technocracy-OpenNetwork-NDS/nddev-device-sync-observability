@@ -4,8 +4,8 @@ use std::path::Path;
 // Telemetry must report the consumed standards release, so the value is baked
 // from the immutable lock at compile time rather than repeated by hand.
 fn main() {
-    println!("cargo:rerun-if-changed=standarts.lock");
-    let release = fs::read_to_string(Path::new("standarts.lock"))
+    println!("cargo:rerun-if-changed=contracts.lock");
+    let release = fs::read_to_string(Path::new("contracts.lock"))
         .ok()
         .and_then(|body| {
             body.lines().map(str::trim).find_map(|line| {
