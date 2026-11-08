@@ -13,7 +13,6 @@ authors = ["NDDev OpenNetwork"]
 [dependencies]
 nddev-device-sync-telemetry = { path = "crates/sdk" }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 axum = "0.8.9"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
@@ -32,7 +31,3 @@ subtle = "2.6"
 thiserror = "2.0"
 tokio = { version = "1.53", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 uuid = { version = "1.27", features = ["v4", "v7"] }
-
-[dev-dependencies]
-http-body-util = "0.1"
-tower = { version = "0.5", features = ["util"] }
