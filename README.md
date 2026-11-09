@@ -133,7 +133,11 @@ For the real Android sink check, select an owned running device explicitly:
 `python3 scripts/check-android-sdk.py --serial SERIAL --ndk ANDROID_NDK_PATH`.
 It checks the native SDK process; production Flutter APK acceptance is separate.
 
-Run `just check`, `just protocol-check`, `just sdk-check` and `just integration`.
+`just setup` fetches frozen source dependencies without package hooks. `just check` performs
+formatting, typing, lint and enabled dependency policy/use checks without compiling or
+emitting JavaScript. On an execution host or runner, `just test` retains native/browser tests
+and generated-source equivalence; also run `just protocol-check`, `just sdk-check` and
+`just integration` for their distinct acceptance.
 `just sdk-wasm-check` checks the stable Rust browser target; it is a compilation
 gate, separate from real browser execution and pipeline qualification.
 Integration requires Docker Engine >=28.2.0 for finite Fluent write timeouts;
