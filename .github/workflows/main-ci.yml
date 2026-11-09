@@ -33,7 +33,12 @@ jobs:
         with:
           python-version: '3.15.0'
       - name: Install locked Rust toolchain
-        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+        uses: NDDev-Technocracy-OpenNetwork/nddev-ci/actions/hosted-sdk@52d8302d2272967a21fd8e3ae594205588648777 # v0.6.28
+        with:
+          rust-version: '1.99.1'
+          rust-components: rustfmt,clippy
+          rust-targets: wasm32-unknown-unknown
+          tools: cargo-audit@0.22.2,cargo-deny@0.20.2,cargo-nextest@0.9.149
       - name: Prepare pinned source-check tools
         uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b
         with:
@@ -45,10 +50,6 @@ jobs:
           shared-key: native-contract
           add-job-id-key: "false"
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install pinned quality tools
-        uses: NDDev-Technocracy-OpenNetwork/nddev-ci/actions/hosted-sdk@52d8302d2272967a21fd8e3ae594205588648777 # v0.6.28
-        with:
-          tools: cargo-audit@0.22.2,cargo-deny@0.20.2,cargo-nextest@0.9.149
       - name: Fetch locked source dependencies without package hooks
         run: just setup
       - name: Check source without compiling
@@ -77,7 +78,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Install locked Rust toolchain
-        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy --target aarch64-linux-android,x86_64-linux-android
+        uses: NDDev-Technocracy-OpenNetwork/nddev-ci/actions/hosted-sdk@52d8302d2272967a21fd8e3ae594205588648777 # v0.6.28
+        with:
+          rust-version: '1.99.1'
+          rust-components: rustfmt,clippy
+          rust-targets: aarch64-linux-android,x86_64-linux-android
       - name: Restore the Cargo dependency and tool cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
