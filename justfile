@@ -34,3 +34,25 @@ protocol-check:
 
 browser-check:
     bun run check
+
+# The checks the former CI library ran from .github/nddev-ci.toml; CI calls them through
+# `just test` on a pull request and `just verify` on dev.
+ci-extras:
+    cargo audit --deny warnings
+    python3 scripts/check-protocol.py
+    python3 scripts/check-sdk.py
+    cargo clippy --locked -p nddev-device-sync-telemetry --features client-traces,browser-bindings --target wasm32-unknown-unknown -- -D warnings
+
+ci-policy:
+    cargo deny --locked check licenses sources
+
+ci-build:
+    cargo build --locked --workspace --release --jobs 4
+    bun run check:generated
+
+verify:
+    just check
+    just test
+    just ci-policy
+    just ci-extras
+    just ci-build
