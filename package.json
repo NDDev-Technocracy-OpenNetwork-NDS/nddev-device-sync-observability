@@ -10,7 +10,7 @@
     "check:generated": "tsc && git diff --exit-code -- crates/sdk/src/browser_queue.js crates/sdk/src/output/console.js"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.5",
+    "@biomejs/biome": "2.6.7",
     "typescript": "7.0.2"
   }
 }
