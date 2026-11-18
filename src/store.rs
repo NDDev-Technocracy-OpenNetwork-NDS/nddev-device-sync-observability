@@ -1,14 +1,15 @@
+use crate::timestamp;
 use crate::{
     application::{AcceptedEvent, ActionCommand, Error, Receipt, Repository},
     config::Secret,
     domain::{self, Action, Condition, Head, Incident, State},
 };
-use chrono::{DateTime, Utc};
 use sqlx::{
     ConnectOptions, PgPool, Postgres, Row, Transaction,
     postgres::{PgConnectOptions, PgPoolOptions, PgRow},
 };
 use std::{str::FromStr, sync::Arc, time::Duration};
+use time::OffsetDateTime;
 
 pub const MAX_RECEIPTS: i64 = 65_536;
 pub const MAX_QUEUE: i64 = 4_096;
@@ -26,8 +27,8 @@ pub struct PgRepository {
 fn unavailable(_: sqlx::Error) -> Error {
     Error::Unavailable
 }
-fn instant(ms: i64) -> Result<DateTime<Utc>, Error> {
-    DateTime::from_timestamp_millis(ms).ok_or(Error::Invalid)
+fn instant(ms: i64) -> Result<OffsetDateTime, Error> {
+    timestamp::from_millis(ms).ok_or(Error::Invalid)
 }
 
 pub async fn connect(url: &Secret, maximum: u32) -> Result<PgPool, Error> {
@@ -138,7 +139,7 @@ impl PgRepository {
         service: &str,
         key: &str,
         condition: Condition,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<(), Error> {
         let dedup = format!("{service}:{key}");
         if condition == Condition::Recovered {
@@ -155,8 +156,8 @@ impl PgRepository {
     pub async fn source_watch(&self, stale_seconds: u64) -> Result<(), Error> {
         let mut tx = self.pool.begin().await.map_err(unavailable)?;
         let clock = self.budget(&mut tx).await?;
-        let now: DateTime<Utc> = clock.try_get("time_floor").map_err(unavailable)?;
-        let cutoff = now - chrono::Duration::seconds(stale_seconds as i64);
+        let now: OffsetDateTime = clock.try_get("time_floor").map_err(unavailable)?;
+        let cutoff = now - time::Duration::seconds(stale_seconds as i64);
         let rows = sqlx::query("SELECT * FROM sources WHERE tenant_id=$1 AND service_name=ANY($2)")
             .bind(&*self.tenant)
             .bind(self.expected.as_ref())
@@ -164,10 +165,11 @@ impl PgRepository {
             .await
             .map_err(unavailable)?;
         for row in rows {
-            let created: DateTime<Utc> = row.try_get("created_at").map_err(unavailable)?;
-            let received: Option<DateTime<Utc>> =
+            let created: OffsetDateTime = row.try_get("created_at").map_err(unavailable)?;
+            let received: Option<OffsetDateTime> =
                 row.try_get("last_received_at").map_err(unavailable)?;
-            let event: Option<DateTime<Utc>> = row.try_get("last_event_at").map_err(unavailable)?;
+            let event: Option<OffsetDateTime> =
+                row.try_get("last_event_at").map_err(unavailable)?;
             if created > cutoff && received.is_none() {
                 continue;
             }
@@ -221,7 +223,7 @@ impl PgRepository {
     ) -> Result<(), Error> {
         let mut tx = self.pool.begin().await.map_err(unavailable)?;
         let clock = self.budget(&mut tx).await?;
-        let now: DateTime<Utc> = clock.try_get("time_floor").map_err(unavailable)?;
+        let now: OffsetDateTime = clock.try_get("time_floor").map_err(unavailable)?;
         let mut removed = 0_i64;
         let mut bytes = 0_i64;
         let mut expired = 0_i64;
@@ -238,7 +240,7 @@ impl PgRepository {
             } else {
                 let backoff = 1_i64 << (*attempts as u32).min(6);
                 sqlx::query("UPDATE event_receipts SET attempts=attempts+1,next_attempt_at=$3 WHERE tenant_id=$1 AND event_id=$2 AND payload IS NOT NULL")
-                    .bind(&*self.tenant).bind(id).bind(now+chrono::Duration::seconds(backoff)).execute(&mut *tx).await.map_err(unavailable)?;
+                    .bind(&*self.tenant).bind(id).bind(now+time::Duration::seconds(backoff)).execute(&mut *tx).await.map_err(unavailable)?;
             }
         }
         sqlx::query("UPDATE delivery_state SET queued_events=queued_events-$2,queued_bytes=queued_bytes-$3,delivered_events=LEAST(delivered_events+$4,9007199254740991),expired_events=LEAST(expired_events+$5,9007199254740991),failures=LEAST(failures+$6,9007199254740991),last_outcome=CASE WHEN $7 THEN 'success' ELSE 'failure' END,last_success_at=CASE WHEN $7 THEN $8 ELSE last_success_at END,last_failure_at=CASE WHEN $7 THEN last_failure_at ELSE $8 END WHERE tenant_id=$1")
@@ -261,7 +263,7 @@ impl PgRepository {
     pub async fn cleanup(&self) -> Result<(), Error> {
         let mut tx = self.pool.begin().await.map_err(unavailable)?;
         let clock = self.budget(&mut tx).await?;
-        let now: DateTime<Utc> = clock.try_get("time_floor").map_err(unavailable)?;
+        let now: OffsetDateTime = clock.try_get("time_floor").map_err(unavailable)?;
         let rows=sqlx::query("SELECT event_id,octet_length(payload) AS bytes FROM event_receipts WHERE tenant_id=$1 AND payload IS NOT NULL AND expires_at<=$2 LIMIT 512")
             .bind(&*self.tenant).bind(now).fetch_all(&mut *tx).await.map_err(unavailable)?;
         let mut bytes = 0_i64;
@@ -304,7 +306,7 @@ impl Repository for PgRepository {
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(unavailable)?;
-        let now: DateTime<Utc> = budget.try_get("time_floor").map_err(unavailable)?;
+        let now: OffsetDateTime = budget.try_get("time_floor").map_err(unavailable)?;
         let mut accepted = 0;
         let mut duplicates = 0;
         for event in events {
@@ -319,7 +321,7 @@ impl Repository for PgRepository {
                 return Err(Error::Invalid);
             }
             let inserted=sqlx::query("INSERT INTO event_receipts(tenant_id,event_id,expires_at,payload,received_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING")
-                .bind(&*self.tenant).bind(event.fingerprint.as_slice()).bind(now+chrono::Duration::seconds(ttl_seconds as i64)).bind(export.then_some(&event.payload)).bind(now).execute(&mut *tx).await.map_err(unavailable)?.rows_affected();
+                .bind(&*self.tenant).bind(event.fingerprint.as_slice()).bind(now+time::Duration::seconds(ttl_seconds as i64)).bind(export.then_some(&event.payload)).bind(now).execute(&mut *tx).await.map_err(unavailable)?.rows_affected();
             if inserted == 0 {
                 duplicates += 1;
                 continue;
@@ -466,9 +468,9 @@ impl Repository for PgRepository {
         let millis = seconds
             .saturating_mul(1000)
             .saturating_add(u64::from(nanos) / 1_000_000);
-        let now: DateTime<Utc> = clock.try_get("time_floor").map_err(unavailable)?;
+        let now: OffsetDateTime = clock.try_get("time_floor").map_err(unavailable)?;
         // The time-bearing ID cannot become new again after finite receipt retention.
-        if now.timestamp_millis().abs_diff(millis as i64) > 600_000 {
+        if timestamp::millis(now).abs_diff(millis as i64) > 600_000 {
             return Err(Error::Invalid);
         }
         let count: i64 =
@@ -493,14 +495,14 @@ impl Repository for PgRepository {
                 let mut incident = from_row(&row)?;
                 match incident
                     .head
-                    .apply(command.expected, command.action, now.timestamp_millis())
+                    .apply(command.expected, command.action, timestamp::millis(now))
                 {
                     Err(domain::RuleError::Revision) => Err(Error::Revision),
                     Err(domain::RuleError::Transition) => Err(Error::Transition),
                     Ok(head) => {
                         incident.head = head;
                         if incident.head.state == State::Resolved {
-                            incident.resolved_at_ms = Some(now.timestamp_millis());
+                            incident.resolved_at_ms = Some(timestamp::millis(now));
                         }
                         sqlx::query("UPDATE incidents SET state=$3,revision=$4,silenced_until=$5,resolved_at=$6 WHERE tenant_id=$1 AND incident_id=$2")
                             .bind(&*self.tenant).bind(&incident.id).bind(incident.head.state.as_str()).bind(incident.head.revision).bind(incident.head.silenced_until_ms.map(instant).transpose()?).bind(incident.resolved_at_ms.map(instant).transpose()?).execute(&mut *tx).await.map_err(unavailable)?;
@@ -532,8 +534,8 @@ fn from_row(row: &PgRow) -> Result<Incident, Error> {
         _ => return Err(Error::Unavailable),
     };
     let optional_time = |name| {
-        row.try_get::<Option<DateTime<Utc>>, _>(name)
-            .map(|v| v.map(|t| t.timestamp_millis()))
+        row.try_get::<Option<OffsetDateTime>, _>(name)
+            .map(|v| v.map(timestamp::millis))
             .map_err(unavailable)
     };
     Ok(Incident {
@@ -549,14 +551,14 @@ fn from_row(row: &PgRow) -> Result<Incident, Error> {
             silenced_until_ms: optional_time("silenced_until")?,
         },
         occurrences: row.try_get("occurrences").map_err(unavailable)?,
-        first_seen_ms: row
-            .try_get::<DateTime<Utc>, _>("first_seen")
-            .map_err(unavailable)?
-            .timestamp_millis(),
-        last_seen_ms: row
-            .try_get::<DateTime<Utc>, _>("last_seen")
-            .map_err(unavailable)?
-            .timestamp_millis(),
+        first_seen_ms: timestamp::millis(
+            row.try_get::<OffsetDateTime, _>("first_seen")
+                .map_err(unavailable)?,
+        ),
+        last_seen_ms: timestamp::millis(
+            row.try_get::<OffsetDateTime, _>("last_seen")
+                .map_err(unavailable)?,
+        ),
         resolved_at_ms: optional_time("resolved_at")?,
     })
 }

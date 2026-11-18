@@ -6,13 +6,14 @@
 //! identifiers and fixed column names, so no request value can carry query syntax, and every hit
 //! is projected onto the fixed, redacted `DiagnosticRecord` fields; raw stored rows never leave.
 use crate::config::SearchConfig;
+use crate::timestamp;
 use crate::wire::{
     DiagnosticFilters, DiagnosticRecord, DiagnosticScope, DiagnosticSearchPage,
     DiagnosticSearchRequest, DiagnosticSignal,
 };
-use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
+use time::{Duration, OffsetDateTime};
 
 /// Stored diagnostics are kept one week; a search never reaches further.
 pub const MAX_WINDOW: Duration = Duration::days(7);
@@ -178,18 +179,14 @@ fn filter_value<'a>(filters: &'a DiagnosticFilters, field: &str) -> Option<&'a s
 /// The time window in microseconds, bounded to the retention and to the present.
 pub fn window(
     request: &DiagnosticSearchRequest,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(i64, i64), SearchError> {
-    let parse = |value: &str| {
-        DateTime::parse_from_rfc3339(value)
-            .map(|time| time.with_timezone(&Utc))
-            .map_err(|_| SearchError::Invalid)
-    };
+    let parse = |value: &str| timestamp::parse(value).map_err(|_| SearchError::Invalid);
     let (start, end) = (parse(&request.start)?, parse(&request.end)?);
     if end <= start || end - start > MAX_WINDOW || end > now + Duration::minutes(1) {
         return Err(SearchError::Invalid);
     }
-    Ok((start.timestamp_micros(), end.timestamp_micros()))
+    Ok((timestamp::micros(start), timestamp::micros(end)))
 }
 
 /// The one SQL statement for this request and scope, or `None` when a condition names a column
@@ -276,8 +273,7 @@ pub fn project(
     hit: &Map<String, Value>,
 ) -> Option<DiagnosticRecord> {
     let micros = hit.get(layout.time)?.as_i64()?;
-    let timestamp = DateTime::<Utc>::from_timestamp_micros(micros)?
-        .to_rfc3339_opts(SecondsFormat::Millis, true);
+    let timestamp = timestamp::format_millis(micros)?;
     let column = |field: &str| {
         layout
             .projection
@@ -354,7 +350,7 @@ pub async fn search(
     config: &SearchConfig,
     scope: &Scope,
     request: &DiagnosticSearchRequest,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<DiagnosticSearchPage, SearchError> {
     let started = std::time::Instant::now();
     let layout =
@@ -583,9 +579,7 @@ mod tests {
 
     #[test]
     fn the_window_stays_inside_the_retention_and_the_present() {
-        let now = DateTime::parse_from_rfc3339("2026-11-01T02:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let now = timestamp::parse("2026-11-01T02:00:00Z").unwrap();
         assert!(window(&request(), now).is_ok());
         let mut long = request();
         long.start = "2026-10-24T00:00:00Z".into();
@@ -701,9 +695,7 @@ mod tests {
             user: "nds-search@nddev.local".into(),
             password: crate::config::Secret::for_tests("read-only-password"),
         };
-        let now = DateTime::parse_from_rfc3339("2026-11-01T02:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let now = timestamp::parse("2026-11-01T02:00:00Z").unwrap();
         let page = search(
             &reqwest::Client::new(),
             &config,

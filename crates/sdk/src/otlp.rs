@@ -49,10 +49,9 @@ impl SpanExporter for ObservedExporter {
         let outcome = self.inner.export(batch).await;
         if outcome.is_ok() {
             self.delivery.successes.fetch_add(1, Ordering::Relaxed);
-            self.delivery.last_success_ms.store(
-                chrono::Utc::now().timestamp_millis().max(0) as u64,
-                Ordering::Relaxed,
-            );
+            self.delivery
+                .last_success_ms
+                .store(crate::unix_millis_now().max(0) as u64, Ordering::Relaxed);
         } else {
             self.delivery.failures.fetch_add(1, Ordering::Relaxed);
             self.delivery.dropped.fetch_add(count, Ordering::Relaxed);

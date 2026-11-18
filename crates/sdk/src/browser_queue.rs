@@ -32,7 +32,7 @@ impl Batch {
         self.metadata.signal
     }
     pub fn expired(&self) -> bool {
-        chrono::Utc::now().timestamp_millis().max(0) as u64 >= self.metadata.expires_at_ms
+        crate::unix_millis_now().max(0) as u64 >= self.metadata.expires_at_ms
     }
 }
 #[wasm_bindgen(module = "/src/browser_queue.js")]
@@ -286,7 +286,7 @@ impl Sender {
         // Only a known, valid receipt may extend current ownership. Never
         // shorten its granted tail or start an extension after batch expiry;
         // an already-held sender can still settle the protected late receipt.
-        let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        let now = crate::unix_millis_now().max(0) as u64;
         let remaining = batch
             .metadata
             .expires_at_ms

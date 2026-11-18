@@ -16,7 +16,7 @@ tracing = "0.1"
 axum = "0.8.9"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+time = { version = "0.3.55", features = ["formatting", "large-dates", "macros", "parsing"] }
 opentelemetry = { version = "0.33.1", default-features = false, features = ["trace", "metrics"] }
 opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace", "metrics"] }
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "metrics", "http-proto", "reqwest-blocking-client"] }
@@ -26,7 +26,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11.1"
 base16ct = { version = "1.0", features = ["alloc"] }
-sqlx = { version = "0.9", default-features = false, features = ["json", "macros", "migrate", "postgres", "runtime-tokio", "tls-rustls", "chrono"] }
+sqlx = { version = "0.9", default-features = false, features = ["json", "macros", "migrate", "postgres", "runtime-tokio", "tls-rustls", "time"] }
 subtle = "2.6"
 thiserror = "2.0"
 tokio = { version = "1.53", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }

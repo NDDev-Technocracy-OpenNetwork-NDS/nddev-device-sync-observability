@@ -5,7 +5,7 @@ use crate::{
     normalize, search,
     signals::Signals,
     store::PgRepository,
-    wire,
+    timestamp, wire,
 };
 use axum::{
     Json, Router,
@@ -16,12 +16,12 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use std::{sync::Arc, time::Duration};
 use subtle::ConstantTimeEq;
+use time::OffsetDateTime;
 use tokio::sync::Semaphore;
 
 pub struct App {
@@ -177,7 +177,15 @@ async fn search(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) ->
         Ok(scope) => scope,
         Err(_) => return refuse(StatusCode::FORBIDDEN, wire::Error::ForbiddenScope),
     };
-    match search::search(&app.search, config, &scope, &request, Utc::now()).await {
+    match search::search(
+        &app.search,
+        config,
+        &scope,
+        &request,
+        OffsetDateTime::now_utc(),
+    )
+    .await
+    {
         Ok(page) => Json(page).into_response(),
         Err(search::SearchError::Invalid) => reject(Error::Invalid),
         Err(search::SearchError::Forbidden) => {
@@ -214,7 +222,7 @@ async fn ingest(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) ->
                 return reject(Error::Invalid);
             }
         };
-        match normalize::accept(value, Utc::now()) {
+        match normalize::accept(value, OffsetDateTime::now_utc()) {
             Ok((event, accepted)) => {
                 spans.push(app.signals.processing(&event));
                 events.push(accepted);
@@ -261,9 +269,7 @@ fn export_mode(app: &App) -> wire::ExportMode {
 }
 
 fn formatted(ms: i64) -> String {
-    DateTime::from_timestamp_millis(ms)
-        .expect("validated database time")
-        .to_rfc3339()
+    timestamp::format_utc(timestamp::from_millis(ms).expect("validated database time"))
 }
 fn incident(value: domain::Incident) -> Result<wire::Incident, Error> {
     let kind = match value.kind.as_str() {
@@ -324,7 +330,7 @@ async fn incidents(State(app): State<Arc<App>>, Query(page): Query<Page>) -> Res
                 Ok(incidents) => Json(wire::IncidentPage {
                     incidents,
                     next_cursor: cursor,
-                    generated_at: Utc::now().to_rfc3339(),
+                    generated_at: timestamp::format_utc(OffsetDateTime::now_utc()),
                 })
                 .into_response(),
                 Err(error) => reject(error),
@@ -442,7 +448,7 @@ async fn silence(
     let Ok(value) = serde_json::from_slice::<wire::SilenceAction>(&body) else {
         return reject(Error::Invalid);
     };
-    let Ok(until) = DateTime::parse_from_rfc3339(&value.until) else {
+    let Ok(until) = timestamp::parse(&value.until) else {
         return reject(Error::Invalid);
     };
     apply(
@@ -451,7 +457,7 @@ async fn silence(
         headers,
         &body,
         Action::Silence {
-            until_ms: until.timestamp_millis(),
+            until_ms: timestamp::millis(until),
         },
         value.operation_id,
         value.expected_revision,
@@ -479,12 +485,13 @@ async fn snapshot(app: &App) -> Result<wire::ObservabilityStatus, Error> {
     .await
     .map_err(|_| Error::Unavailable)?;
     let mut sources = Vec::new();
-    let cutoff = Utc::now() - chrono::Duration::seconds(app.config.stale_after.as_secs() as i64);
+    let cutoff = OffsetDateTime::now_utc()
+        - time::Duration::seconds(app.config.stale_after.as_secs() as i64);
     for row in rows {
-        let received: Option<DateTime<Utc>> = row
+        let received: Option<OffsetDateTime> = row
             .try_get("last_received_at")
             .map_err(|_| Error::Unavailable)?;
-        let event: Option<DateTime<Utc>> = row
+        let event: Option<OffsetDateTime> = row
             .try_get("last_event_at")
             .map_err(|_| Error::Unavailable)?;
         let sequence: Option<i64> = row
@@ -510,15 +517,15 @@ async fn snapshot(app: &App) -> Result<wire::ObservabilityStatus, Error> {
                 .try_get("service_name")
                 .map_err(|_| Error::Unavailable)?,
             state,
-            last_received_at: received.map(|v| v.to_rfc3339()),
-            last_event_at: event.map(|v| v.to_rfc3339()),
+            last_received_at: received.map(timestamp::format_utc),
+            last_event_at: event.map(timestamp::format_utc),
             last_sequence: sequence,
             gap_observations: row
                 .try_get("gap_observations")
                 .map_err(|_| Error::Unavailable)?,
         });
     }
-    let success: Option<DateTime<Utc>> = budget
+    let success: Option<OffsetDateTime> = budget
         .try_get("last_success_at")
         .map_err(|_| Error::Unavailable)?;
     let last_outcome: String = budget
@@ -558,7 +565,7 @@ async fn snapshot(app: &App) -> Result<wire::ObservabilityStatus, Error> {
             },
             successes: delivered,
             failures: budget.try_get("failures").map_err(|_| Error::Unavailable)?,
-            last_success_at: success.map(|v| v.to_rfc3339()),
+            last_success_at: success.map(timestamp::format_utc),
         },
         metrics: app
             .signals
