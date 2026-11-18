@@ -1,5 +1,5 @@
 //! Native OTLP signals for actual observability work, never reconstructed server spans.
-use crate::{application::Error, config::Config, event_wire::TelemetryEvent, wire};
+use crate::{application::Error, config::Config, event_wire::TelemetryEvent, timestamp, wire};
 use opentelemetry::{
     Context, KeyValue,
     metrics::{Counter, Histogram, MeterProvider as _},
@@ -37,7 +37,7 @@ pub struct Delivery {
     pub last_success_ms: AtomicU64,
 }
 fn now_ms() -> u64 {
-    chrono::Utc::now().timestamp_millis().max(0) as u64
+    timestamp::millis(time::OffsetDateTime::now_utc()).max(0) as u64
 }
 impl Delivery {
     fn record(&self, success: bool) {
@@ -66,9 +66,7 @@ impl Delivery {
                 .load(Ordering::Relaxed)
                 .min(crate::domain::MAX_COUNTER as u64) as i64,
             last_success_at: (success > 0).then(|| {
-                chrono::DateTime::from_timestamp_millis(success as i64)
-                    .expect("current time")
-                    .to_rfc3339()
+                timestamp::format_utc(timestamp::from_millis(success as i64).expect("current time"))
             }),
             state: if !enabled {
                 wire::State::Disabled

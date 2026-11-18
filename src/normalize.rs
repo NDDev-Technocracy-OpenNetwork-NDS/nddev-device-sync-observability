@@ -1,20 +1,19 @@
+use crate::timestamp;
 use crate::{
     application::{AcceptedEvent, Error},
     event_wire::{Resource, TelemetryEvent},
 };
-use chrono::{DateTime, Utc};
 use nddev_device_sync_telemetry::decode_event;
 use sha2::{Digest, Sha256};
+use time::{Duration, OffsetDateTime};
 
 pub fn accept(
     value: serde_json::Value,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(TelemetryEvent, AcceptedEvent), Error> {
     let event = decode_event(value).map_err(|_| Error::Invalid)?;
-    let time = DateTime::parse_from_rfc3339(&event.timestamp)
-        .map_err(|_| Error::Invalid)?
-        .with_timezone(&Utc);
-    if time > now + chrono::Duration::seconds(60) || time < now - chrono::Duration::hours(24) {
+    let time = timestamp::parse(&event.timestamp).map_err(|_| Error::Invalid)?;
+    if time > now + Duration::seconds(60) || time < now - Duration::hours(24) {
         return Err(Error::Invalid);
     }
     let payload = serde_json::to_vec(&event).map_err(|_| Error::Invalid)?;
@@ -32,7 +31,7 @@ pub fn accept(
         }),
         route: event.route.clone(),
         status: event.status,
-        timestamp_ms: time.timestamp_millis(),
+        timestamp_ms: timestamp::millis(time),
         device: event.device_id.clone(),
         instance: event.producer_instance_id.clone(),
         sequence: event.producer_sequence,

@@ -9,4 +9,5 @@ pub mod search;
 pub mod signals;
 pub mod source_wire;
 pub mod store;
+mod timestamp;
 pub mod wire;

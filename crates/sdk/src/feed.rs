@@ -136,7 +136,7 @@ impl ExportBatch {
     #[cfg(any(target_arch = "wasm32", feature = "native-spool"))]
     pub fn expires_at_ms(&self) -> Result<u64, Error> {
         let remaining = RETENTION.checked_sub(self.created.elapsed()).ok_or(Error)?;
-        u64::try_from(chrono::Utc::now().timestamp_millis())
+        u64::try_from(crate::unix_millis_now())
             .map_err(|_| Error)?
             .checked_add(remaining.as_millis() as u64)
             .ok_or(Error)
@@ -552,9 +552,9 @@ mod tests {
         event(&router);
         let mut batch = feed.take_batch().unwrap();
         batch.created -= Duration::from_secs(300);
-        let before = chrono::Utc::now().timestamp_millis() as u64;
+        let before = crate::unix_millis_now() as u64;
         let expiry = batch.expires_at_ms().unwrap();
-        let after = chrono::Utc::now().timestamp_millis() as u64;
+        let after = crate::unix_millis_now() as u64;
         assert!((before + 1_499_000..=after + 1_500_000).contains(&expiry));
         batch.created -= RETENTION;
         assert!(batch.expires_at_ms().is_err());

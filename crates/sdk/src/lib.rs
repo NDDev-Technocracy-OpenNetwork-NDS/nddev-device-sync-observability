@@ -25,6 +25,28 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
 
+fn utc_now_millis() -> String {
+    use time::macros::format_description;
+
+    time::OffsetDateTime::now_utc()
+        .format(format_description!(
+            "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
+        ))
+        .expect("UTC timestamp has all required components")
+}
+
+#[cfg(any(
+    test,
+    target_arch = "wasm32",
+    feature = "native-spool",
+    feature = "otlp"
+))]
+fn unix_millis_now() -> i64 {
+    time::OffsetDateTime::now_utc()
+        .unix_timestamp_nanos()
+        .div_euclid(1_000_000) as i64
+}
+
 #[cfg(feature = "otlp")]
 pub mod otlp;
 use tracing_subscriber::{
@@ -197,7 +219,7 @@ impl Policy {
         .map(|(k, v)| (k.into(), Value::String(v.clone())))
         .collect();
         let mut check = base.clone();
-        check.insert("timestamp".into(), chrono::Utc::now().to_rfc3339().into());
+        check.insert("timestamp".into(), utc_now_millis().into());
         check.insert("severity".into(), "info".into());
         check.insert("event.name".into(), "logging.initialized".into());
         if !contract::VALIDATOR.is_valid(&Value::Object(check)) {
@@ -365,12 +387,7 @@ impl<W: Write> Shared<W> {
                 fields.insert(key.clone(), value.clone());
             }
         }
-        fields.insert(
-            "timestamp".into(),
-            chrono::Utc::now()
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-                .into(),
-        );
+        fields.insert("timestamp".into(), utc_now_millis().into());
         fields.insert("severity".into(), severity.into());
         if !contract::VALIDATOR.is_valid(&Value::Object(fields.clone())) {
             self.rejected.fetch_add(1, Ordering::Relaxed);

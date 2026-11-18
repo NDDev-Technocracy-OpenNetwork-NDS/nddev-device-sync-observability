@@ -19,7 +19,7 @@ opentelemetry-otlp = { version = "0.33.1", optional = true, default-features = f
 reqwest = { version = "0.13", optional = true, default-features = false, features = ["blocking", "rustls-no-provider"] }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 url = { version = "2.5", optional = true }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+time = { version = "0.3.55", features = ["formatting", "macros"] }
 jsonschema = { version = "0.61.0", default-features = false }
 opentelemetry = { version = "0.33.1", default-features = false, features = ["trace"] }
 opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
@@ -47,4 +47,4 @@ gloo-timers = { version = "0.4", features = ["futures"] }
 futures = "0.3"
 web-time = "1.1"
 uuid = { version = "1.27", features = ["js"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "wasmbind"] }
+time = { version = "0.3.55", features = ["wasm-bindgen"] }
