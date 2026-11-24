@@ -12,6 +12,7 @@ import math
 import os
 import pathlib
 import secrets
+import signal
 import socket
 import subprocess
 import tarfile
@@ -77,7 +78,11 @@ def eventually(predicate,seconds=45):
         time.sleep(.2)
     raise AssertionError('bounded acceptance condition timed out')
 
+def interrupt(_signal, _frame):
+    raise KeyboardInterrupt
+
 def main():
+    signal.signal(signal.SIGTERM, interrupt)
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--fixture-receipt',type=pathlib.Path)
     parser.add_argument('--fixture-seconds',type=int,default=1200)
@@ -111,6 +116,7 @@ def main():
     parts=re.match(r'^(\d+)\.(\d+)\.(\d+)',version)
     assert parts and tuple(map(int,parts.groups())) >= (28,2,0), 'Docker Engine >=28.2.0 is required for bounded Fluent writes'
     project='nds-obs-test-'+secrets.token_hex(5)
+    volume=project+'_oo_data'
     with tempfile.TemporaryDirectory(prefix='nds-obs-acceptance-') as temp:
         directory=pathlib.Path(temp);private=directory/'secrets';private.mkdir(mode=0o700)
         values={key:secrets.token_urlsafe(32) for key in ['postgres_admin_password','postgres_migrator_password','postgres_runtime_password','ingest_token','admin_token','vector_password','oo_password']}
@@ -143,6 +149,7 @@ def main():
             'server-migrate':{'image':SERVER_IMAGE,'command':['migrate'],'mem_limit':'256m','read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],'environment':{'NDS_MIGRATION_DATABASE_URL_FILE':'/run/secrets/server_migration_url'},'secrets':['server_migration_url'],'networks':['pipeline'],'depends_on':{'server-postgres':{'condition':'service_healthy'}}},
             'server':{'image':SERVER_IMAGE,'command':['serve'],'read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],'mem_limit':'512m','pids_limit':64,'environment':{'DATABASE_URL_FILE':'/run/secrets/server_runtime_url','NDS_SERVER_ADDR':'0.0.0.0:8080','NDS_MAX_REQUESTS':'1','NDS_MAX_CONNECTIONS':'4'},'secrets':['server_runtime_url'],'networks':['pipeline'],'depends_on':{'server-migrate':{'condition':'service_completed_successfully'}},'logging':{'driver':'fluentd','options':{'fluentd-address':'127.0.0.1:'+env['NDS_FLUENT_PORT'],'fluentd-async':'true','fluentd-buffer-limit':'256','fluentd-max-retries':'3','fluentd-retry-wait':'1s','fluentd-write-timeout':'2s','fluentd-async-reconnect-interval':'1s','mode':'non-blocking','max-buffer-size':'1m','cache-max-size':'2m','cache-max-file':'2'}}},
         },'secrets':{'server_migration_url':{'file':str(private/'server_migration_url')},'server_runtime_url':{'file':str(private/'server_runtime_url')}}}
+        override['volumes']={'oo_data':{'external':True,'name':volume}}
         if args.fixture_receipt is not None:
             override['services']['observability']['environment']['NDS_TELEMETRY_ENABLED']='true'
             fixture_ports={name:free_port() for name in ['observability','vector','openobserve']}
@@ -158,8 +165,8 @@ def main():
         def endpoint(service,port):return f'http://{service}:{port}'
         try:
             # Only this uniquely named, test-owned volume requires initial UID setup.
-            command('docker','volume','create',project+'_oo_data')
-            command('docker','run','--rm','--network','none','--user','0','--cap-drop','ALL','--cap-add','CHOWN','--security-opt','no-new-privileges:true','--mount',f'type=volume,src={project}_oo_data,dst=/data',DEBIAN,'chown','10001:10001','/data')
+            command('docker','volume','create','--label','dev.nds.acceptance.project='+project,volume,timeout=15)
+            command('docker','run','--rm','--network','none','--user','0','--cap-drop','ALL','--cap-add','CHOWN','--security-opt','no-new-privileges:true','--mount',f'type=volume,src={volume},dst=/data',DEBIAN,'chown','10001:10001','/data')
             compose('pull','openobserve','vector','postgres','server-postgres',timeout=900)
             compose('up','--detach','openobserve','vector','postgres','server-postgres','probe',timeout=120)
             global PROBE
@@ -497,8 +504,11 @@ def main():
             print("\n".join(line for line in diagnostics.splitlines() if any(word in line for word in [" ERROR "," WARN ","panicked", "Error response from daemon"]))[:9000])
             raise
         finally:
-            # Scope is the random Compose project created above, never other work.
-            compose('down','--volumes','--remove-orphans','--timeout','20',check=False,timeout=60)
-            command('docker','volume','rm',project+'_oo_data',check=False)
+            try:
+                compose('down','--volumes','--remove-orphans','--timeout','20',timeout=60)
+            finally:
+                volumes=command('docker','volume','ls','--quiet','--filter','name='+volume,timeout=15)
+                if volume in volumes.stdout.splitlines():
+                    command('docker','volume','rm',volume,timeout=15)
 
 if __name__=='__main__':main()
